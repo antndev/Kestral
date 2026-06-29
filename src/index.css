@@ -1,0 +1,62 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource-variable/inter";
+
+/* ReUIs echtes Basis-CSS (Custom-Variants data-open/data-selected, Keyframes,
+   no-scrollbar) und ihr echtes Theme (Tokens, Farben, Radius). 1:1 aus dem
+   keenthemes/reui Repo uebernommen. */
+@import "./reui-base.css";
+@import "./reui-theme.css";
+
+/* Inter (Variable Font ueber fontsource) hinter ReUIs --font-inter haengen. */
+:root {
+  --font-inter: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  /* Hintergrund des aktiven Terminal-Farbschemas. Wird von prefs.tsx gesetzt
+     und faerbt Terminal-Rahmen und Seitenleisten-Rand. */
+  --term-bg: #1e1e1e;
+}
+
+@layer base {
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-sans);
+    /* Strg+A markiert nicht die ganze Oberflaeche; gezieltes Markieren in
+       Feldern/Code-Bloecken bleibt moeglich (siehe unten). */
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  input,
+  textarea,
+  pre,
+  code,
+  [data-selectable] {
+    user-select: text;
+    -webkit-user-select: text;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* Animationsgeschwindigkeit aus den Einstellungen (data-anim am <html>).
+   "normal" laesst die getunten Dauern der Komponenten unberuehrt. */
+html[data-anim="off"] *,
+html[data-anim="off"] *::before,
+html[data-anim="off"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+}
+html[data-anim="fast"] *,
+html[data-anim="fast"] *::before,
+html[data-anim="fast"] *::after {
+  animation-duration: 110ms !important;
+  transition-duration: 110ms !important;
+}

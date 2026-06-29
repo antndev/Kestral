@@ -1,0 +1,303 @@
+import { useEffect, useRef, useState } from "react";
+import { invoke, Channel } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { Check, CircleAlert, PlugZap } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
+import { usePrefs } from "./lib/prefs";
+import { termThemeOf } from "./lib/terminal-themes";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import "@xterm/xterm/css/xterm.css";
+
+type Stage = "connecting" | "authenticating" | "opening-shell" | "connected" | "error" | "closed";
+interface Status {
+  stage: Stage;
+  detail: string;
+}
+
+const STAGE_TEXT: Record<Stage, string> = {
+  connecting: "Connecting",
+  authenticating: "Authenticating",
+  "opening-shell": "Opening shell",
+  connected: "Connected",
+  error: "Connection failed",
+  closed: "Disconnected",
+};
+
+// Heuristik: sieht die letzte Ausgabezeile nach einem Passwort-Prompt aus?
+// Solche Eingaben werden NICHT protokolliert (kein Echo -> Geheimnis).
+// Der Doppelpunkt am Ende ist Pflicht, damit nicht jede Zeile, die zufaellig
+// "password" o.ae. erwaehnt, echte Befehle verschluckt.
+const PW_PROMPT = /(password|passphrase|passcode|verification code)[^\n]{0,40}:\s*$/i;
+// CSI/Farbcodes vor dem Test entfernen.
+const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
+
+/** Echter Terminal-Emulator (xterm), an eine interaktive SSH-PTY-Shell im Kern gekoppelt. */
+export function SshTerminal({ hostId }: { hostId: string }) {
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [status, setStatus] = useState<Status>({ stage: "connecting", detail: "" });
+  const [gen, setGen] = useState(0);
+
+  // Aktuelles Farbschema. Per Ref gelesen, damit ein Schemawechsel das Terminal
+  // nicht neu aufbaut (das wuerde die Verbindung trennen). Live-Update unten.
+  const { termTheme } = usePrefs();
+  const termThemeRef = useRef(termTheme);
+  termThemeRef.current = termTheme;
+  const termRef = useRef<Terminal | null>(null);
+
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    let disposed = false;
+    const sessionId = crypto.randomUUID();
+    setStatus({ stage: "connecting", detail: "" });
+
+    const term = new Terminal({
+      cursorBlink: true,
+      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      fontSize: 13,
+      theme: termThemeOf(termThemeRef.current).theme,
+    });
+    termRef.current = term;
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.loadAddon(new WebLinksAddon());
+    term.open(el);
+
+    // Copy/Paste wie in gaengigen Terminals.
+    const paste = () => {
+      navigator.clipboard
+        .readText()
+        .then((txt) => {
+          if (!disposed && txt) void invoke("ssh_write", { id: sessionId, data: txt });
+        })
+        .catch(() => {});
+    };
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== "keydown") return true;
+      const k = e.key.toLowerCase();
+      if (e.ctrlKey && e.shiftKey && k === "c") {
+        const sel = term.getSelection();
+        if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+        return false;
+      }
+      if (e.ctrlKey && e.shiftKey && k === "v") {
+        paste();
+        return false;
+      }
+      if (e.ctrlKey && !e.shiftKey && k === "c") {
+        const sel = term.getSelection();
+        if (sel) {
+          navigator.clipboard.writeText(sel).catch(() => {});
+          term.clearSelection();
+          return false; // bei Auswahl kopieren statt SIGINT
+        }
+        return true; // sonst Ctrl+C als SIGINT durchlassen
+      }
+      if (e.ctrlKey && !e.shiftKey && k === "v") {
+        paste();
+        return false;
+      }
+      return true;
+    });
+    const onContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      paste();
+    };
+    el.addEventListener("contextmenu", onContextMenu);
+
+    // Kern -> Bildschirm: rohe PTY-Bytes kommen als ArrayBuffer (InvokeResponseBody::Raw).
+    // Nebenbei einen kurzen Ausgabe-Schwanz fuer die Passwort-Prompt-Erkennung halten.
+    const decoder = new TextDecoder();
+    let outTail = "";
+    const onOutput = new Channel<ArrayBuffer>();
+    onOutput.onmessage = (buf) => {
+      if (disposed) return;
+      const bytes = new Uint8Array(buf);
+      term.write(bytes);
+      try {
+        outTail = (outTail + decoder.decode(bytes, { stream: true })).slice(-400);
+      } catch {
+        /* ignore */
+      }
+    };
+
+    // Tastatureingaben -> Kern. Zusaetzlich best effort die eingegebenen Zeilen
+    // zu Befehlen zusammensetzen und ins Protokoll schreiben. Passwort-Prompts
+    // (kein Echo) werden uebersprungen, damit keine Geheimnisse ins Log geraten.
+    let lineBuf = "";
+    let lineSecret = false;
+    const feed = (text: string) => {
+      for (const ch of text) {
+        if (ch === "\r" || ch === "\n") {
+          const cmd = lineBuf.trim();
+          const secret = lineSecret;
+          lineBuf = "";
+          lineSecret = false;
+          if (cmd && !secret) void invoke("audit_user_command", { hostId, command: cmd });
+        } else if (ch === "\x7f" || ch === "\b") {
+          lineBuf = lineBuf.slice(0, -1);
+        } else if (ch === "\x03" || ch === "\x15") {
+          lineBuf = "";
+          lineSecret = false;
+        } else if (ch >= " ") {
+          if (lineBuf === "") {
+            const lastLine = (outTail.split(/[\r\n]/).pop() ?? "").replace(ANSI, "");
+            lineSecret = PW_PROMPT.test(lastLine);
+          }
+          lineBuf += ch;
+        }
+      }
+    };
+    const dataSub = term.onData((data) => {
+      void invoke("ssh_write", { id: sessionId, data });
+      if (data.startsWith("\x1b")) {
+        // Bracketed Paste entpacken (\x1b[200~ … \x1b[201~), sonst Sequenz ignorieren.
+        const m = data.match(/\x1b\[200~([\s\S]*?)\x1b\[201~/);
+        if (m) feed(m[1]);
+        return;
+      }
+      feed(data);
+    });
+
+    // Statusmeldungen aus dem Kern (connecting/authenticating/opening-shell/connected/error).
+    const statusSub = listen<{ id: string; stage: Stage; detail: string }>("session-status", (e) => {
+      if (!disposed && e.payload.id === sessionId) {
+        setStatus({ stage: e.payload.stage, detail: e.payload.detail });
+      }
+    });
+    // Gegenstelle hat die Sitzung beendet.
+    const closeSub = listen<string>("session-closed", (e) => {
+      if (!disposed && e.payload === sessionId) {
+        term.write("\r\n\x1b[33m[Verbindung getrennt]\x1b[0m\r\n");
+        setStatus({ stage: "closed", detail: "" });
+      }
+    });
+
+    // Shell oeffnen, sobald das Layout steht (fit braucht echte Hoehe).
+    requestAnimationFrame(() => {
+      try {
+        fit.fit();
+      } catch {
+        /* ignore */
+      }
+      if (disposed) return;
+      void invoke("ssh_open_shell", {
+        id: sessionId,
+        hostId,
+        cols: term.cols,
+        rows: term.rows,
+        onOutput,
+      })
+        .then(() => {
+          if (disposed) void invoke("ssh_close", { id: sessionId });
+        })
+        .catch((err) => {
+          if (!disposed) setStatus({ stage: "error", detail: String(err) });
+        });
+    });
+
+    // Groessenaenderung -> fit -> Backend informieren.
+    let raf = 0;
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        try {
+          fit.fit();
+        } catch {
+          /* ignore */
+        }
+        void invoke("ssh_resize", { id: sessionId, cols: term.cols, rows: term.rows });
+      });
+    });
+    ro.observe(el);
+
+    return () => {
+      disposed = true;
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+      dataSub.dispose();
+      statusSub.then((f) => f());
+      closeSub.then((f) => f());
+      el.removeEventListener("contextmenu", onContextMenu);
+      void invoke("ssh_close", { id: sessionId });
+      term.dispose();
+      termRef.current = null;
+    };
+  }, [hostId, gen]);
+
+  // Farbschema live umschalten, ohne die Sitzung neu aufzubauen.
+  useEffect(() => {
+    if (termRef.current) termRef.current.options.theme = termThemeOf(termTheme).theme;
+  }, [termTheme]);
+
+  const STEPS: Stage[] = ["connecting", "authenticating", "opening-shell"];
+  const connecting = STEPS.includes(status.stage);
+  const curIdx = STEPS.indexOf(status.stage);
+  const reconnect = () => setGen((g) => g + 1);
+
+  return (
+    <div className="relative h-full w-full bg-[var(--term-bg)] p-3">
+      <div ref={wrapRef} className="h-full w-full" />
+
+      {status.stage !== "connected" && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/70 backdrop-blur-[1px] animate-in fade-in-0 duration-150">
+          <div className="flex flex-col items-center gap-5 text-center px-6">
+            {connecting ? (
+              <div className="flex flex-col gap-3 text-left">
+                {STEPS.map((s, i) => {
+                  const done = i < curIdx;
+                  const activeStep = i === curIdx;
+                  return (
+                    <div key={s} className="flex items-center gap-3">
+                      <div
+                        className={
+                          "size-7 rounded-full flex items-center justify-center shrink-0 border " +
+                          (done
+                            ? "bg-white/15 border-transparent text-white"
+                            : activeStep
+                              ? "border-white/60 text-white"
+                              : "border-white/15 text-white/30")
+                        }
+                      >
+                        {done ? (
+                          <Check className="size-4" />
+                        ) : activeStep ? (
+                          <Spinner className="size-4" />
+                        ) : (
+                          <span className="text-xs">{i + 1}</span>
+                        )}
+                      </div>
+                      <span className={activeStep ? "text-sm text-white/90 font-medium" : done ? "text-sm text-white/60" : "text-sm text-white/30"}>
+                        {STAGE_TEXT[s]}
+                        {activeStep && status.detail ? ` · ${status.detail}` : ""}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <>
+                <div
+                  className={
+                    "size-12 rounded-full flex items-center justify-center " +
+                    (status.stage === "error" ? "bg-destructive/20 text-destructive" : "bg-white/10 text-white/70")
+                  }
+                >
+                  {status.stage === "error" ? <CircleAlert className="size-6" /> : <PlugZap className="size-6" />}
+                </div>
+                <div className="flex flex-col gap-1">
+                  <div className="text-sm text-white/90 font-medium">{STAGE_TEXT[status.stage]}</div>
+                  {status.detail && <div className="text-xs text-white/50 max-w-xs break-words">{status.detail}</div>}
+                </div>
+                <Button size="sm" variant="secondary" onClick={reconnect}>Reconnect</Button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Helmsman</title>
+    <script>
+      // Dunkel/Hell frueh setzen, um Aufflackern beim Start zu vermeiden.
+      // Respektiert die gespeicherte Auswahl (helmsman-theme), sonst System.
+      (function () {
+        try {
+          const t = localStorage.getItem("helmsman-theme");
+          const dark =
+            t === "dark" ||
+            ((t === "system" || !t) && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.classList.toggle("dark", dark);
+        } catch (e) {
+          /* ignore */
+        }
+      })();
+    </script>
+  </head>
+
+  <body class="bg-background text-foreground">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
