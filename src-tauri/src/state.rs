@@ -7,7 +7,9 @@ use crate::approval::ApprovalBroker;
 use crate::audit::AuditLog;
 use crate::error::{AppError, Result};
 use crate::hosts::HostStore;
+use crate::model::Host;
 use crate::policy::{DeniedReason, Gate, PolicyEngine};
+use crate::sftp::{self, FileEntry};
 use crate::snippets::SnippetStore;
 use crate::ssh::{CommandOutput, SshManager};
 use crate::vault::Vault;
@@ -128,6 +130,118 @@ impl Services {
                 Some(e.to_string()),
             ),
         }
+        result
+    }
+
+    // --- KI-Dateizugriff (SFTP), eigene Policy je Host ---
+
+    /// Prueft die Datei-Policy des Hosts, holt ggf. die Freigabe ein und gibt den
+    /// (nach der Freigabe erneut geladenen) Host plus die Entscheidung zurueck.
+    async fn authorize_file(&self, host_id: Uuid, action: &str) -> Result<(Host, &'static str)> {
+        let host = self.hosts.get(host_id)?;
+        let hid = host.id.to_string();
+        match self.policy.gate(host.ai_file_policy) {
+            Gate::Denied(reason) => {
+                self.record_denied(&hid, &host.name, action, reason);
+                Err(reason_to_err(reason))
+            }
+            Gate::NeedsApproval => {
+                let approved = self
+                    .approval
+                    .request(hid.clone(), host.name.clone(), action.to_string())
+                    .await;
+                if !approved {
+                    self.audit.record(
+                        hid,
+                        host.name.clone(),
+                        action.to_string(),
+                        "denied",
+                        None,
+                        false,
+                        Some("vom nutzer abgelehnt".to_string()),
+                    );
+                    return Err(AppError::ApprovalDenied);
+                }
+                let host = self.hosts.get(host_id)?;
+                match self.policy.gate(host.ai_file_policy) {
+                    Gate::Denied(reason) => {
+                        self.record_denied(&hid, &host.name, action, reason);
+                        Err(reason_to_err(reason))
+                    }
+                    _ => Ok((host, "approved")),
+                }
+            }
+            Gate::Allowed => Ok((host, "allowed")),
+        }
+    }
+
+    fn audit_file(&self, host: &Host, action: &str, decision: &str, result: &Result<u64>) {
+        match result {
+            Ok(bytes) => self.audit.record(
+                host.id.to_string(),
+                host.name.clone(),
+                action.to_string(),
+                decision,
+                None,
+                true,
+                Some(format!("{bytes} bytes")),
+            ),
+            Err(e) => self.audit.record(
+                host.id.to_string(),
+                host.name.clone(),
+                action.to_string(),
+                "error",
+                None,
+                false,
+                Some(e.to_string()),
+            ),
+        }
+    }
+
+    pub async fn ai_sftp_list(&self, host_id: Uuid, path: &str) -> Result<Vec<FileEntry>> {
+        let action = format!("sftp list {path}");
+        let (host, decision) = self.authorize_file(host_id, &action).await?;
+        let result = sftp::one_shot_list(&self.ssh, &self.vault, &host, path).await;
+        match &result {
+            Ok(entries) => self.audit.record(
+                host.id.to_string(),
+                host.name.clone(),
+                action,
+                decision,
+                None,
+                true,
+                Some(format!("{} entries", entries.len())),
+            ),
+            Err(e) => self.audit.record(
+                host.id.to_string(),
+                host.name.clone(),
+                action,
+                "error",
+                None,
+                false,
+                Some(e.to_string()),
+            ),
+        }
+        result
+    }
+
+    pub async fn ai_sftp_download(&self, host_id: Uuid, remote: &str, local: &str) -> Result<u64> {
+        let action = format!("sftp download {remote} -> {local}");
+        let (host, decision) = self.authorize_file(host_id, &action).await?;
+        let result =
+            sftp::one_shot_download(&self.ssh, &self.vault, &host, remote, std::path::Path::new(local))
+                .await;
+        self.audit_file(&host, &action, decision, &result);
+        result
+    }
+
+    pub async fn ai_sftp_upload(&self, host_id: Uuid, local: &str, remote: &str) -> Result<u64> {
+        let action = format!("sftp upload {local} -> {remote}");
+        let (host, decision) = self.authorize_file(host_id, &action).await?;
+        let result =
+            sftp::one_shot_upload(&self.ssh, &self.vault, &host, std::path::Path::new(local), remote)
+                .await;
+        self.audit_file(&host, &action, decision, &result);
         result
     }
 }

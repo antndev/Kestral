@@ -27,15 +27,15 @@ export class ErrorBoundary extends Component<Props, State> {
 
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-background text-foreground p-6">
-        <div className="max-w-lg w-full rounded-xl border border-surface-secondary bg-surface p-6 flex flex-col gap-4">
-          <div className="flex items-center gap-2 text-danger">
+        <div className="max-w-lg w-full rounded-xl border border-border bg-card p-6 flex flex-col gap-4">
+          <div className="flex items-center gap-2 text-destructive">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} className="w-5 h-5" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="9" />
               <path d="M12 8v5M12 16h.01" />
             </svg>
             <h1 className="text-base font-semibold">Something went wrong</h1>
           </div>
-          <pre className="text-xs font-mono whitespace-pre-wrap break-words text-muted max-h-64 overflow-auto rounded-lg bg-black/30 p-3">
+          <pre className="text-xs font-mono whitespace-pre-wrap break-words text-muted-foreground max-h-64 overflow-auto rounded-lg bg-muted p-3">
             {error.message}
             {error.stack ? "\n\n" + error.stack : ""}
           </pre>
@@ -44,7 +44,7 @@ export class ErrorBoundary extends Component<Props, State> {
               this.setState({ error: null });
               window.location.reload();
             }}
-            className="self-start rounded-lg bg-accent text-accent-foreground px-4 py-2 text-sm font-medium"
+            className="self-start rounded-lg bg-primary text-primary-foreground px-4 py-2 text-sm font-medium"
           >
             Reload
           </button>

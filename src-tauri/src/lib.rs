@@ -6,6 +6,7 @@ mod hosts;
 mod mcp;
 mod model;
 mod policy;
+mod sftp;
 mod snippets;
 mod ssh;
 mod state;
@@ -33,6 +34,8 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             let base_dir = app
                 .path()
@@ -68,6 +71,7 @@ pub fn run() {
                 mcp_cancel: ct.clone(),
             });
             app.manage(terminal::Sessions::default());
+            app.manage(sftp::SftpSessions::default());
 
             // Eingebauten MCP-Server als Hintergrund-Task starten.
             let mcp_handle = app.handle().clone();
@@ -95,11 +99,13 @@ pub fn run() {
             commands::secret_put,
             commands::secret_list,
             commands::secret_delete,
+            commands::derive_pubkey,
             commands::host_list,
             commands::host_add,
             commands::host_update,
             commands::host_remove,
             commands::host_set_policy,
+            commands::host_set_file_policy,
             commands::ai_status,
             commands::ai_enable,
             commands::ai_disable,
@@ -112,6 +118,16 @@ pub fn run() {
             commands::snippet_delete,
             commands::mcp_info,
             commands::run_command_ui,
+            commands::sftp_open,
+            commands::sftp_list,
+            commands::sftp_download,
+            commands::sftp_upload,
+            commands::sftp_read_text,
+            commands::sftp_write_text,
+            commands::sftp_mkdir,
+            commands::sftp_remove,
+            commands::sftp_rename,
+            commands::sftp_close,
             terminal::ssh_open_shell,
             terminal::ssh_write,
             terminal::ssh_resize,

@@ -81,4 +81,14 @@ impl HostStore {
         host.ai_policy = policy;
         self.save(&hosts)
     }
+
+    pub fn set_file_policy(&self, id: Uuid, policy: AiPolicy) -> Result<()> {
+        let mut hosts = self.hosts.lock().unwrap();
+        let host = hosts
+            .iter_mut()
+            .find(|h| h.id == id)
+            .ok_or_else(|| AppError::NotFound(id.to_string()))?;
+        host.ai_file_policy = policy;
+        self.save(&hosts)
+    }
 }

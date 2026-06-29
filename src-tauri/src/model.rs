@@ -38,8 +38,13 @@ pub struct Host {
     pub port: u16,
     pub username: String,
     pub auth: AuthMethod,
+    /// KI-Stufe fuer Befehle (run_command).
     #[serde(default)]
     pub ai_policy: AiPolicy,
+    /// Separate KI-Stufe fuer Dateizugriff (SFTP). Eigener Opt-In, standardmaessig
+    /// gesperrt, unabhaengig von der Befehls-Policy.
+    #[serde(default)]
+    pub ai_file_policy: AiPolicy,
 }
 
 /// Eingabe aus dem UI zum Anlegen eines Hosts (ohne id).
@@ -52,6 +57,8 @@ pub struct NewHost {
     pub auth: AuthMethod,
     #[serde(default)]
     pub ai_policy: AiPolicy,
+    #[serde(default)]
+    pub ai_file_policy: AiPolicy,
 }
 
 /// Ein benanntes Skript, das auf bestimmten Hosts ausgefuehrt werden kann.
@@ -96,6 +103,7 @@ impl NewHost {
             username: self.username,
             auth: self.auth,
             ai_policy: self.ai_policy,
+            ai_file_policy: self.ai_file_policy,
         }
     }
 }

@@ -1,11 +1,15 @@
+use serde::Serialize;
 use tauri::State;
 use uuid::Uuid;
 use zeroize::Zeroizing;
+
+use std::sync::Arc;
 
 use crate::audit::AuditEntry;
 use crate::error::{AppError, Result};
 use crate::model::{AiPolicy, Host, NewHost, NewSnippet, Snippet};
 use crate::policy::AiStatus;
+use crate::sftp::{FileEntry, SftpSessions};
 use crate::ssh::CommandOutput;
 use crate::state::{AppState, McpInfo};
 use crate::vault::{SecretKind, SecretMeta, SecretStore};
@@ -68,6 +72,33 @@ pub async fn secret_list(state: State<'_, AppState>) -> Result<Vec<SecretMeta>> 
     state.services.vault.list_secrets()
 }
 
+/// Abgeleiteter Public Key und SHA256-Fingerprint zu einem Private Key.
+#[derive(Serialize)]
+pub struct PubkeyInfo {
+    pub public_key: String,
+    pub fingerprint: String,
+}
+
+/// Leitet aus einem (unverschluesselten) Private Key den OpenSSH-Public-Key und
+/// dessen SHA256-Fingerprint ab. Der Private Key verlaesst den Kern nicht.
+#[tauri::command]
+pub async fn derive_pubkey(private_key: String) -> Result<PubkeyInfo> {
+    let pk = Zeroizing::new(private_key);
+    let key = russh::keys::decode_secret_key(pk.as_str(), None)
+        .map_err(|e| AppError::Ssh(format!("Schluessel laden: {e}")))?;
+    let public = key.public_key();
+    let public_key = public
+        .to_openssh()
+        .map_err(|e| AppError::Ssh(format!("Public Key: {e}")))?;
+    let fingerprint = public
+        .fingerprint(russh::keys::ssh_key::HashAlg::Sha256)
+        .to_string();
+    Ok(PubkeyInfo {
+        public_key,
+        fingerprint,
+    })
+}
+
 #[tauri::command]
 pub async fn secret_delete(state: State<'_, AppState>, id: String) -> Result<()> {
     state.services.vault.delete_secret(&id)
@@ -106,6 +137,15 @@ pub async fn host_set_policy(
     policy: AiPolicy,
 ) -> Result<()> {
     state.services.hosts.set_policy(parse_id(&id)?, policy)
+}
+
+#[tauri::command]
+pub async fn host_set_file_policy(
+    state: State<'_, AppState>,
+    id: String,
+    policy: AiPolicy,
+) -> Result<()> {
+    state.services.hosts.set_file_policy(parse_id(&id)?, policy)
 }
 
 // --- KI-Schalter ---
@@ -210,4 +250,118 @@ pub async fn run_command_ui(
         .ssh
         .run_command(&host, &state.services.vault, &command)
         .await
+}
+
+// --- SFTP-Browser (Nutzer, kein KI-Gate) ---
+
+fn sftp_handle(
+    sessions: &SftpSessions,
+    id: &str,
+) -> Result<Arc<crate::sftp::SftpHandle>> {
+    sessions
+        .get(id)
+        .ok_or_else(|| AppError::Other("SFTP-Sitzung nicht gefunden".into()))
+}
+
+#[tauri::command]
+pub async fn sftp_open(
+    state: State<'_, AppState>,
+    sessions: State<'_, SftpSessions>,
+    id: String,
+    host_id: String,
+) -> Result<String> {
+    // Eine evtl. alte Sitzung gleicher id sauber schliessen.
+    sessions.remove(&id);
+    let host = state.services.hosts.get(parse_id(&host_id)?)?;
+    let handle = crate::sftp::connect(&state.services.ssh, &state.services.vault, &host).await?;
+    let home = handle.home().await.unwrap_or_else(|_| "/".to_string());
+    sessions.insert(id, Arc::new(handle));
+    Ok(home)
+}
+
+#[tauri::command]
+pub async fn sftp_list(
+    sessions: State<'_, SftpSessions>,
+    id: String,
+    path: String,
+) -> Result<Vec<FileEntry>> {
+    sftp_handle(&sessions, &id)?.list(&path).await
+}
+
+#[tauri::command]
+pub async fn sftp_download(
+    sessions: State<'_, SftpSessions>,
+    id: String,
+    remote: String,
+    local: String,
+) -> Result<u64> {
+    sftp_handle(&sessions, &id)?
+        .download(&remote, std::path::Path::new(&local))
+        .await
+}
+
+#[tauri::command]
+pub async fn sftp_upload(
+    sessions: State<'_, SftpSessions>,
+    id: String,
+    local: String,
+    remote: String,
+) -> Result<u64> {
+    sftp_handle(&sessions, &id)?
+        .upload(std::path::Path::new(&local), &remote)
+        .await
+}
+
+#[tauri::command]
+pub async fn sftp_read_text(
+    sessions: State<'_, SftpSessions>,
+    id: String,
+    path: String,
+) -> Result<String> {
+    sftp_handle(&sessions, &id)?.read_text(&path).await
+}
+
+#[tauri::command]
+pub async fn sftp_write_text(
+    sessions: State<'_, SftpSessions>,
+    id: String,
+    path: String,
+    content: String,
+) -> Result<()> {
+    sftp_handle(&sessions, &id)?.write_text(&path, &content).await
+}
+
+#[tauri::command]
+pub async fn sftp_mkdir(
+    sessions: State<'_, SftpSessions>,
+    id: String,
+    path: String,
+) -> Result<()> {
+    sftp_handle(&sessions, &id)?.mkdir(&path).await
+}
+
+#[tauri::command]
+pub async fn sftp_remove(
+    sessions: State<'_, SftpSessions>,
+    id: String,
+    path: String,
+    is_dir: bool,
+) -> Result<()> {
+    sftp_handle(&sessions, &id)?.remove(&path, is_dir).await
+}
+
+#[tauri::command]
+pub async fn sftp_rename(
+    sessions: State<'_, SftpSessions>,
+    id: String,
+    from: String,
+    to: String,
+) -> Result<()> {
+    sftp_handle(&sessions, &id)?.rename(&from, &to).await
+}
+
+#[tauri::command]
+pub async fn sftp_close(sessions: State<'_, SftpSessions>, id: String) -> Result<()> {
+    sessions.remove(&id);
+    Ok(())
 }

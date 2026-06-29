@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useId, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { motion } from "motion/react";
 import { listen } from "@tauri-apps/api/event";
 import {
   Server,
@@ -18,23 +17,13 @@ import {
   Copy,
   TerminalSquare,
   Settings,
+  Folder,
+  Home,
+  ClipboardPaste,
   X,
 } from "lucide-react";
+import { readText as clipReadText, writeText as clipWriteText } from "@tauri-apps/plugin-clipboard-manager";
 
-import {
-  SidebarProvider,
-  Sidebar,
-  SidebarHeader,
-  SidebarContent,
-  SidebarFooter,
-  SidebarMenu,
-  SidebarMenuItem,
-  SidebarMenuButton,
-  SidebarInset,
-  SidebarTrigger,
-  SidebarRail,
-  SidebarGroup,
-} from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -108,9 +97,10 @@ import type {
   Snippet,
 } from "./api";
 import { SshTerminal } from "./SshTerminal";
-import { usePrefs, THEMES, ANIM_SPEEDS } from "./lib/prefs";
-import type { Theme, AnimSpeed } from "./lib/prefs";
-import { TERMINAL_THEMES, termThemeOf } from "./lib/terminal-themes";
+import { SftpBrowser } from "./SftpBrowser";
+import { usePrefs, THEMES, ANIM_MIN, ANIM_MAX } from "./lib/prefs";
+import type { Theme } from "./lib/prefs";
+import { TERMINAL_THEMES, terminalTheme } from "./lib/terminal-themes";
 import type { ITheme } from "@xterm/xterm";
 
 /* ----------------------------- helpers ----------------------------- */
@@ -241,15 +231,11 @@ function Unlock({ exists, onUnlocked }: { exists: boolean; onUnlocked: () => voi
               </ul>
             )}
           </CardContent>
-          <CardFooter className="flex flex-col gap-3">
+          <CardFooter>
             <Button className="w-full" size="lg" disabled={!pw || busy} onClick={submit}>
               {busy && <Spinner className="size-4" />}
               {exists ? "Unlock" : "Create vault"}
             </Button>
-            <div className="flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
-              <Lock className="size-3 shrink-0" />
-              Encrypted locally with XChaCha20-Poly1305.
-            </div>
           </CardFooter>
         </Card>
       </div>
@@ -260,11 +246,14 @@ function Unlock({ exists, onUnlocked }: { exists: boolean; onUnlocked: () => voi
 /* ----------------------------- shell ----------------------------- */
 
 type SessionTab = { tabId: string; host: Host };
+/** Aktiver oberer Tab: Start-Workspace, SFTP-Workspace oder eine Verbindung (tabId). */
+type TopTab = "start" | "sftp" | string;
 
 function Shell({ onLock }: { onLock: () => void }) {
   const [section, setSection] = useState<Section>("hosts");
   const [sessions, setSessions] = useState<SessionTab[]>([]);
-  const [activeSession, setActiveSession] = useState<string | null>(null);
+  const [topTab, setTopTab] = useState<TopTab>("start");
+  const [sftpHost, setSftpHost] = useState<Host | null>(null);
   const [aiActive, setAiActive] = useState(false);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -324,146 +313,113 @@ function Shell({ onLock }: { onLock: () => void }) {
   function openSession(host: Host) {
     const tabId = crypto.randomUUID();
     setSessions((s) => [...s, { tabId, host }]);
-    setActiveSession(tabId);
+    setTopTab(tabId);
+  }
+  function openSftp(host: Host) {
+    setSftpHost(host);
+    setTopTab("sftp");
   }
   function closeSession(tabId: string) {
     setSessions((s) => s.filter((t) => t.tabId !== tabId));
-    setActiveSession((cur) => (cur === tabId ? null : cur));
+    setTopTab((cur) => (cur === tabId ? "start" : cur));
   }
   function onHostUpdated(h: Host) {
     setSessions((s) => s.map((t) => (t.host.id === h.id ? { ...t, host: h } : t)));
+    setSftpHost((cur) => (cur?.id === h.id ? h : cur));
   }
   function onHostDeleted(id: string) {
-    setActiveSession((cur) => {
-      const t = sessions.find((x) => x.tabId === cur);
-      return t && t.host.id === id ? null : cur;
-    });
+    const activeIsDeleted = sessions.find((x) => x.tabId === topTab)?.host.id === id;
+    if (activeIsDeleted) setTopTab("start");
     setSessions((s) => s.filter((t) => t.host.id !== id));
+    setSftpHost((cur) => (cur?.id === id ? null : cur));
   }
   function goSection(s: Section) {
     setSection(s);
-    setActiveSession(null);
+    setTopTab("start");
   }
   async function lock() {
     await api.vaultLock();
     onLock();
   }
 
+  // Sidebar in Start und SFTP sichtbar (gleiches Layout, ruhiger Wechsel), nur
+  // bei offener Terminal-Verbindung weg, damit der Inhalt voll Breite bekommt.
+  const showSidebar = topTab === "start" || topTab === "sftp";
+  const workspaceTabs = (
+    <>
+      <WorkspaceTab label="Start" icon={Home} active={topTab === "start"} onSelect={() => setTopTab("start")} />
+      <WorkspaceTab label="SFTP" icon={Folder} active={topTab === "sftp"} onSelect={() => setTopTab("sftp")} />
+    </>
+  );
+
   return (
-    <SidebarProvider>
+    <div className="flex flex-col h-screen overflow-hidden bg-background text-foreground">
       {approvals[0] && <ApprovalModal req={approvals[0]} onAnswer={answerApproval} />}
       <ConnectPalette open={paletteOpen} onOpenChange={setPaletteOpen} onConnect={openSession} />
 
-      <Sidebar collapsible="icon" className="[border-right-color:var(--term-bg)]">
-        <SidebarHeader>
-          <div className="flex items-center px-1 py-1">
-            <SidebarTrigger />
-          </div>
-        </SidebarHeader>
-        <SidebarContent>
-          <SidebarGroup>
-            <SidebarMenu>
-              {NAV.map((n) => {
-                const I = n.icon;
-                const navActive = section === n.id && !activeSession;
-                return (
-                  <SidebarMenuItem key={n.id}>
-                    <SidebarMenuButton
-                      isActive={navActive}
-                      onClick={() => goSection(n.id)}
-                      tooltip={n.label}
-                      className="relative"
-                    >
-                      {navActive && (
-                        <motion.span
-                          layoutId="nav-active"
-                          className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full bg-primary"
-                          transition={{ type: "spring", stiffness: 500, damping: 34 }}
-                        />
-                      )}
-                      <I className="size-4 shrink-0 transition-transform group-hover/menu-item:scale-110" />
-                      <span>{n.label}</span>
-                      {n.id === "mcp" && aiActive && (
-                        <span className="ml-auto size-2 rounded-full bg-success" />
-                      )}
-                      {n.id === "logs" && approvals.length > 0 && (
-                        <Badge variant="warning" className="ml-auto">
-                          {approvals.length}
-                        </Badge>
-                      )}
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                );
-              })}
-            </SidebarMenu>
-          </SidebarGroup>
-        </SidebarContent>
-        <SidebarFooter>
-          <SidebarMenu>
-            <SidebarMenuItem>
-              {(() => {
-                const settingsActive = section === "settings" && !activeSession;
-                return (
-                  <SidebarMenuButton
-                    isActive={settingsActive}
-                    onClick={() => goSection("settings")}
-                    tooltip="Settings"
-                    className="relative"
-                  >
-                    {settingsActive && (
-                      <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full bg-primary" />
-                    )}
-                    <Settings className="size-4 shrink-0 transition-transform group-hover/menu-item:scale-110" />
-                    <span>Settings</span>
-                  </SidebarMenuButton>
-                );
-              })()}
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton onClick={lock} tooltip="Lock">
-                <Lock className="size-4" />
-                <span>Lock</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          </SidebarMenu>
-        </SidebarFooter>
-        <SidebarRail />
-      </Sidebar>
-
-      <SidebarInset>
-        <header className="h-11 flex items-center gap-1 pl-1 pr-2 border-b shrink-0">
-          <div className="flex items-center min-w-0 flex-1 overflow-x-auto no-scrollbar">
-            {sessions.length > 0 && (
-              <div className="inline-flex items-center gap-1 rounded-lg bg-muted p-1">
-                {sessions.map((t) => (
-                  <TermTab
-                    key={t.tabId}
-                    label={t.host.name}
-                    active={activeSession === t.tabId}
-                    onSelect={() => setActiveSession(t.tabId)}
-                    onClose={() => closeSession(t.tabId)}
-                  />
-                ))}
-              </div>
-            )}
+      {/* Globale Tableiste. Der linke Block ist immer gleich breit (wie die Sidebar),
+          damit nichts horizontal springt und die Trennlinie fluchtet. */}
+      <div className="h-11 flex items-stretch border-b shrink-0 bg-sidebar">
+        <div className="w-48 shrink-0 flex items-center justify-center gap-1.5 px-2 border-r border-sidebar-border">
+          {workspaceTabs}
+        </div>
+        <div className="flex items-center gap-1 px-2 min-w-0 flex-1">
+          <div className="flex items-center gap-1 min-w-0 flex-1 overflow-x-auto no-scrollbar">
+            {sessions.map((t) => (
+              <ConnTab
+                key={t.tabId}
+                label={t.host.name}
+                active={topTab === t.tabId}
+                onSelect={() => setTopTab(t.tabId)}
+                onClose={() => closeSession(t.tabId)}
+              />
+            ))}
           </div>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon-sm" onClick={() => setPaletteOpen(true)} aria-label="New session">
+              <Button variant="ghost" size="icon-sm" onClick={() => setPaletteOpen(true)} aria-label="New connection">
                 <Plus className="size-4" />
               </Button>
             </TooltipTrigger>
             <TooltipContent>Connect (Ctrl+K)</TooltipContent>
           </Tooltip>
-        </header>
+        </div>
+      </div>
 
-        <div className="flex-1 min-h-0 relative">
-          <div className={activeSession ? "hidden" : "h-full overflow-y-auto"}>
+      <div className="flex flex-1 min-h-0">
+        {showSidebar && (
+          <aside className="w-48 shrink-0 flex flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
+            <nav className="flex-1 overflow-y-auto p-2 flex flex-col gap-0.5">
+              {NAV.map((n) => (
+                <NavButton
+                  key={n.id}
+                  icon={n.icon}
+                  label={n.id === "mcp" && aiActive ? <ShinyText text={n.label} speed={3} className="font-medium" /> : n.label}
+                  active={topTab === "start" && section === n.id}
+                  onClick={() => goSection(n.id)}
+                />
+              ))}
+            </nav>
+            <div className="p-2 flex flex-col gap-0.5 border-t">
+              <NavButton
+                icon={Settings}
+                label="Settings"
+                active={topTab === "start" && section === "settings"}
+                onClick={() => goSection("settings")}
+              />
+              <NavButton icon={Lock} label="Lock" active={false} onClick={lock} />
+            </div>
+          </aside>
+        )}
+
+        <main className="flex-1 min-h-0 relative">
+          {/* Start-Workspace */}
+          <div className={topTab === "start" ? "h-full overflow-y-auto" : "hidden"}>
             <div key={section} className="animate-in fade-in-0 slide-in-from-bottom-2 duration-300 ease-out">
               {section === "hosts" ? (
-                <HostsView onOpen={openSession} onHostUpdated={onHostUpdated} onHostDeleted={onHostDeleted} />
+                <HostsView onOpen={openSession} onOpenSftp={openSftp} onHostUpdated={onHostUpdated} onHostDeleted={onHostDeleted} />
               ) : section === "logs" ? (
-                <LogsView approvals={approvals} onAnswer={answerApproval} />
+                <LogsView />
               ) : section === "keychain" ? (
                 <KeychainView />
               ) : section === "snippets" ? (
@@ -475,18 +431,54 @@ function Shell({ onLock }: { onLock: () => void }) {
               )}
             </div>
           </div>
+
+          {/* SFTP-Workspace mit Host-Auswahl */}
+          <div className={topTab === "sftp" ? "absolute inset-0" : "hidden"}>
+            <SftpWorkspace host={sftpHost} onPickHost={setSftpHost} />
+          </div>
+
+          {/* Verbindungs-Tabs (Terminals), bleiben gemountet damit die Sitzung haelt */}
           {sessions.map((t) => (
-            <div key={t.tabId} className={activeSession === t.tabId ? "absolute inset-0" : "hidden"}>
+            <div key={t.tabId} className={topTab === t.tabId ? "absolute inset-0" : "hidden"}>
               <SshTerminal hostId={t.host.id} />
             </div>
           ))}
-        </div>
-      </SidebarInset>
-    </SidebarProvider>
+        </main>
+      </div>
+    </div>
   );
 }
 
-function TermTab({
+/** Dauerhafter oberer Tab (Start, SFTP). Kein Schliessen-Knopf. */
+function WorkspaceTab({
+  label,
+  icon: Icon,
+  active,
+  onSelect,
+}: {
+  label: string;
+  icon: typeof Server;
+  active: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      onClick={onSelect}
+      className={
+        "inline-flex items-center justify-center gap-1.5 px-4 h-8 rounded-md shrink-0 text-sm whitespace-nowrap transition-colors " +
+        (active
+          ? "bg-accent text-foreground shadow-sm ring-1 ring-border"
+          : "text-muted-foreground hover:text-foreground hover:bg-accent/50")
+      }
+    >
+      <Icon className="size-3.5 shrink-0" />
+      <span className={active ? "font-medium" : ""}>{label}</span>
+    </button>
+  );
+}
+
+/** Verbindungs-Tab (Terminal) mit Schliessen-Knopf. */
+function ConnTab({
   label,
   active,
   onSelect,
@@ -500,36 +492,96 @@ function TermTab({
   return (
     <div
       onClick={onSelect}
-      className="group relative inline-flex items-center gap-1.5 pl-2.5 pr-1 h-7 rounded-md shrink-0 cursor-pointer text-sm whitespace-nowrap"
+      className={
+        "group inline-flex items-center gap-1.5 pl-2.5 pr-1 h-8 rounded-md shrink-0 cursor-pointer text-sm whitespace-nowrap transition-colors " +
+        (active
+          ? "bg-accent text-foreground shadow-sm ring-1 ring-border"
+          : "text-muted-foreground hover:text-foreground hover:bg-accent/50")
+      }
     >
-      {active && (
-        <motion.span
-          layoutId="term-tab-active"
-          className="absolute inset-0 rounded-md bg-background shadow-sm"
-          transition={{ type: "spring", stiffness: 420, damping: 34 }}
-        />
-      )}
-      <TerminalSquare
-        className={"relative z-10 size-3.5 shrink-0 transition-colors " + (active ? "text-foreground" : "text-muted-foreground")}
-      />
-      <span
-        className={
-          "relative z-10 whitespace-nowrap transition-colors " +
-          (active ? "text-foreground" : "text-muted-foreground group-hover:text-foreground")
-        }
-      >
-        {label}
-      </span>
+      <TerminalSquare className="size-3.5 shrink-0" />
+      <span className="whitespace-nowrap">{label}</span>
       <button
         onClick={(e) => {
           e.stopPropagation();
           onClose();
         }}
-        className="relative z-10 grid size-5 place-items-center rounded text-muted-foreground/70 hover:bg-foreground/10 hover:text-foreground transition-colors"
+        className="ml-0.5 grid size-5 place-items-center rounded text-muted-foreground/70 hover:bg-foreground/10 hover:text-foreground transition-colors"
         aria-label="Close tab"
       >
         <X className="size-3.5" />
       </button>
+    </div>
+  );
+}
+
+/** Eintrag in der immer offenen Seitenleiste. */
+function NavButton({
+  icon: Icon,
+  label,
+  active,
+  onClick,
+  badge,
+}: {
+  icon: typeof Server;
+  label: ReactNode;
+  active: boolean;
+  onClick: () => void;
+  badge?: ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={
+        "group flex items-center gap-2.5 rounded-md px-2.5 h-9 text-sm transition-colors " +
+        (active
+          ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
+          : "text-muted-foreground hover:text-foreground hover:bg-sidebar-accent/50")
+      }
+    >
+      <Icon className="size-4 shrink-0 transition-transform group-hover:scale-110" />
+      <span className="truncate flex-1 text-left">{label}</span>
+      {badge}
+    </button>
+  );
+}
+
+/** SFTP-Workspace: Host oben auswaehlen, darunter der Dateibrowser. */
+function SftpWorkspace({ host, onPickHost }: { host: Host | null; onPickHost: (h: Host | null) => void }) {
+  const [hosts, setHosts] = useState<Host[]>([]);
+  useEffect(() => {
+    api.hostList().then(setHosts).catch(() => setHosts([]));
+  }, []);
+  return (
+    <div className="h-full flex flex-col">
+      <div className="flex items-center gap-2 px-3 h-11 border-b shrink-0 bg-sidebar/40">
+        <span className="text-sm text-muted-foreground shrink-0">Host</span>
+        <Select value={host?.id ?? ""} onValueChange={(id) => onPickHost(hosts.find((h) => h.id === id) ?? null)}>
+          <SelectTrigger className="w-60 h-8">
+            <SelectValue placeholder="Select a host to browse…" />
+          </SelectTrigger>
+          <SelectContent>
+            {hosts.map((h) => (
+              <SelectItem key={h.id} value={h.id}>
+                {h.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="flex-1 min-h-0">
+        {host ? (
+          <SftpBrowser key={host.id} tabId={`sftp-ws-${host.id}`} host={host} />
+        ) : (
+          <div className="h-full flex items-center justify-center">
+            <EmptyState
+              icon={<Folder className="size-6" />}
+              title="No host selected"
+              hint="Pick a host above to browse its files over SFTP."
+            />
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -606,7 +658,9 @@ function PageHeader({ title, subtitle, action }: { title: string; subtitle?: str
   );
 }
 
-/** Segmentierte Auswahl mit gleitendem, animiertem Aktiv-Indikator (motion). */
+/** Segmentierte Auswahl mit gleitendem Aktiv-Indikator. Die Position kommt aus
+ *  dem Index (CSS-Transform), nicht aus einer Layout-Animation, laeuft also beim
+ *  Scrollen nicht nach. Gleich breite Zellen, damit der Schieber exakt passt. */
 function Segmented<T extends string>({
   value,
   onChange,
@@ -618,10 +672,21 @@ function Segmented<T extends string>({
   options: { value: T; label: ReactNode }[];
   size?: "sm" | "default";
 }) {
-  const id = useId();
   const h = size === "sm" ? "h-7" : "h-8";
+  const count = options.length;
+  const activeIndex = options.findIndex((o) => o.value === value);
   return (
-    <div className="inline-flex items-center gap-0.5 rounded-lg bg-muted p-1">
+    <div
+      className="relative inline-grid rounded-lg bg-muted p-1"
+      style={{ gridTemplateColumns: `repeat(${count}, minmax(0, 1fr))` }}
+    >
+      {activeIndex >= 0 && (
+        <span
+          aria-hidden
+          className="absolute top-1 bottom-1 left-1 rounded-md bg-accent shadow-sm ring-1 ring-border transition-transform duration-200 ease-out"
+          style={{ width: `calc((100% - 0.5rem) / ${count})`, transform: `translateX(${activeIndex * 100}%)` }}
+        />
+      )}
       {options.map((o) => {
         const active = o.value === value;
         return (
@@ -629,16 +694,9 @@ function Segmented<T extends string>({
             key={o.value}
             type="button"
             onClick={() => onChange(o.value)}
-            className={`relative ${h} px-3 rounded-md text-sm font-medium transition-colors duration-200 ${active ? "text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            className={`relative z-10 ${h} px-3 rounded-md text-sm font-medium text-center whitespace-nowrap transition-colors ${active ? "text-foreground" : "text-muted-foreground hover:text-foreground"}`}
           >
-            {active && (
-              <motion.span
-                layoutId={`seg-${id}`}
-                className="absolute inset-0 rounded-md bg-background shadow-sm"
-                transition={{ type: "spring", stiffness: 420, damping: 34 }}
-              />
-            )}
-            <span className="relative z-10">{o.label}</span>
+            {o.label}
           </button>
         );
       })}
@@ -648,10 +706,12 @@ function Segmented<T extends string>({
 
 function HostsView({
   onOpen,
+  onOpenSftp,
   onHostUpdated,
   onHostDeleted,
 }: {
   onOpen: (h: Host) => void;
+  onOpenSftp: (h: Host) => void;
   onHostUpdated: (h: Host) => void;
   onHostDeleted: (id: string) => void;
 }) {
@@ -659,6 +719,9 @@ function HostsView({
   const [query, setQuery] = useState("");
   const [panel, setPanel] = useState<null | "new" | Host>(null);
   const [toDelete, setToDelete] = useState<Host | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [anchor, setAnchor] = useState<number | null>(null);
+  const [batchConfirm, setBatchConfirm] = useState(false);
 
   const refresh = useCallback(async () => setHosts(await api.hostList()), []);
   useEffect(() => {
@@ -675,6 +738,39 @@ function HostsView({
         h.username.toLowerCase().includes(q),
     );
   }, [hosts, query]);
+
+  function clearSel() {
+    setSelected(new Set());
+    setBatchConfirm(false);
+    setAnchor(null);
+  }
+  function handleSelect(index: number, id: string, shift: boolean) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (shift && anchor !== null) {
+        const [a, b] = anchor < index ? [anchor, index] : [index, anchor];
+        for (let i = a; i <= b; i++) next.add(filtered[i].id);
+      } else if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+    if (!shift) setAnchor(index);
+  }
+  async function batchDelete() {
+    const ids = [...selected];
+    try {
+      for (const id of ids) {
+        await api.hostRemove(id);
+        onHostDeleted(id);
+      }
+    } finally {
+      clearSel();
+      refresh();
+    }
+  }
 
   return (
     <div className="px-6 pt-5 pb-12 flex flex-col gap-5">
@@ -693,6 +789,27 @@ function HostsView({
         </Button>
       </div>
 
+      {selected.size > 0 && (
+        <div className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2 animate-in fade-in-0 slide-in-from-top-1 duration-150">
+          <span className="text-sm font-medium">{selected.size} selected</span>
+          <div className="flex-1" />
+          {batchConfirm ? (
+            <>
+              <span className="text-sm text-muted-foreground">Delete {selected.size}?</span>
+              <Button size="sm" variant="ghost" onClick={batchDelete}>
+                <Check className="size-4 text-destructive" /> Yes
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setBatchConfirm(false)}>No</Button>
+            </>
+          ) : (
+            <Button size="sm" variant="ghost" onClick={() => setBatchConfirm(true)}>
+              <Trash2 className="size-4" /> Delete
+            </Button>
+          )}
+          <Button size="sm" variant="ghost" onClick={clearSel}>Clear</Button>
+        </div>
+      )}
+
       {filtered.length === 0 ? (
         <EmptyState
           icon={<Server className="size-6" />}
@@ -701,11 +818,14 @@ function HostsView({
         />
       ) : (
         <div className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(240px,1fr))]">
-          {filtered.map((h) => (
+          {filtered.map((h, i) => (
             <HostCard
               key={h.id}
               host={h}
+              selected={selected.has(h.id)}
+              onSelect={(shift) => handleSelect(i, h.id, shift)}
               onConnect={() => onOpen(h)}
+              onSftp={() => onOpenSftp(h)}
               onEdit={() => setPanel(h)}
               onDelete={() => setToDelete(h)}
             />
@@ -749,19 +869,29 @@ function HostsView({
 
 function HostCard({
   host,
+  selected,
+  onSelect,
   onConnect,
+  onSftp,
   onEdit,
   onDelete,
 }: {
   host: Host;
+  selected: boolean;
+  onSelect: (shift: boolean) => void;
   onConnect: () => void;
+  onSftp: () => void;
   onEdit: () => void;
   onDelete: () => void;
 }) {
   return (
     <div
+      onClick={(e) => onSelect(e.shiftKey)}
       onDoubleClick={onConnect}
-      className="group relative flex flex-col gap-3 rounded-lg border bg-card p-4 transition-colors hover:border-ring"
+      className={
+        "group relative flex flex-col gap-3 rounded-lg border p-4 transition-colors cursor-pointer select-none " +
+        (selected ? "border-ring ring-1 ring-ring/40 bg-accent/40" : "bg-card hover:border-ring")
+      }
     >
       <div className="absolute top-2 right-2 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
         <Button variant="ghost" size="icon-sm" onClick={(e) => { e.stopPropagation(); onEdit(); }} aria-label="Edit host">
@@ -782,9 +912,14 @@ function HostCard({
           </div>
         </div>
       </div>
-      <Button size="sm" className="w-full" onClick={onConnect}>
-        Connect
-      </Button>
+      <div className="flex gap-2">
+        <Button size="sm" className="flex-1" onClick={(e) => { e.stopPropagation(); onConnect(); }}>
+          Connect
+        </Button>
+        <Button size="sm" variant="secondary" onClick={(e) => { e.stopPropagation(); onSftp(); }}>
+          <Folder className="size-4" /> SFTP
+        </Button>
+      </div>
     </div>
   );
 }
@@ -805,6 +940,103 @@ function LabeledField({ label, children }: { label: string; children: ReactNode 
     <div className="flex flex-col gap-1.5">
       <Label>{label}</Label>
       {children}
+    </div>
+  );
+}
+
+/** Eingabe fuer einen Geheimniswert. Private Keys sind mehrzeilig, daher eine
+ *  Textarea (ein einzeiliges Input verschluckt die Zeilenumbrueche). */
+function SecretValueField({
+  isKey,
+  value,
+  onChange,
+}: {
+  isKey: boolean;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const [derived, setDerived] = useState<{ public_key: string; fingerprint: string } | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  // Aus dem Private Key automatisch Public Key und Fingerprint ableiten (debounced).
+  useEffect(() => {
+    if (!isKey || !value.includes("PRIVATE KEY")) {
+      setDerived(null);
+      return;
+    }
+    let alive = true;
+    const t = setTimeout(() => {
+      api
+        .derivePubkey(value)
+        .then((info) => alive && setDerived(info))
+        .catch(() => alive && setDerived(null));
+    }, 400);
+    return () => {
+      alive = false;
+      clearTimeout(t);
+    };
+  }, [isKey, value]);
+
+  async function paste() {
+    try {
+      const t = await clipReadText();
+      if (t) onChange(t);
+    } catch {
+      /* ignore */
+    }
+  }
+  async function copyPub() {
+    if (!derived) return;
+    try {
+      await clipWriteText(derived.public_key);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (!isKey) {
+    return (
+      <Input
+        type="password"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="••••••••"
+      />
+    );
+  }
+  return (
+    <div className="flex flex-col gap-1.5">
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={"-----BEGIN OPENSSH PRIVATE KEY-----\n…\n-----END OPENSSH PRIVATE KEY-----"}
+        spellCheck={false}
+        data-selectable
+        rows={7}
+        className="w-full rounded-md border border-input bg-transparent dark:bg-input/30 px-3 py-2 text-xs font-mono leading-relaxed resize-y outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+      />
+      <div className="flex justify-end">
+        <Button type="button" size="xs" variant="ghost" onClick={paste}>
+          <ClipboardPaste className="size-3.5" /> Paste from clipboard
+        </Button>
+      </div>
+      {derived && (
+        <div className="flex flex-col gap-2 rounded-md border bg-muted/30 p-2.5 text-xs animate-in fade-in-0 duration-150">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-muted-foreground shrink-0 w-20">Fingerprint</span>
+            <span className="font-mono truncate" title={derived.fingerprint}>{derived.fingerprint}</span>
+          </div>
+          <div className="flex items-start gap-2 min-w-0">
+            <span className="text-muted-foreground shrink-0 w-20 mt-0.5">Public key</span>
+            <span className="font-mono break-all flex-1 text-muted-foreground">{derived.public_key}</span>
+            <Button type="button" size="icon-xs" variant="ghost" className="shrink-0" onClick={copyPub} aria-label="Copy public key">
+              {copied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -843,9 +1075,43 @@ function HostSheet({
   const [newSecretValue, setNewSecretValue] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [invalid, setInvalid] = useState<Set<string>>(new Set());
+  const [shaking, setShaking] = useState(false);
 
   const options = authKind === "key" ? keyIds : pwIds;
   const effectiveSel = options.includes(secretSel) ? secretSel : NEW_SECRET;
+
+  function clearInvalid(key: string) {
+    setInvalid((s) => {
+      if (!s.has(key)) return s;
+      const n = new Set(s);
+      n.delete(key);
+      return n;
+    });
+  }
+  // Pflichtfelder pruefen. Bei Fehlern rot markieren und kurz wackeln.
+  function validate(): boolean {
+    const bad = new Set<string>();
+    if (!name.trim()) bad.add("name");
+    if (!hostname.trim()) bad.add("hostname");
+    if (!username.trim()) bad.add("username");
+    setInvalid(bad);
+    if (bad.size > 0) {
+      setShaking(false);
+      requestAnimationFrame(() => setShaking(true));
+      return false;
+    }
+    return true;
+  }
+  const shakeClass = (key: string) => (shaking && invalid.has(key) ? "animate-shake" : "");
+
+  // Sanftes Schliessen: erst open=false (Radix spielt die Ausblend-Animation),
+  // dann nach der Dauer wirklich aushaengen.
+  const [open, setOpen] = useState(true);
+  const close = () => {
+    setOpen(false);
+    setTimeout(onClose, 220);
+  };
 
   // Persistiert den Host (neu oder bearbeitet) und gibt ihn zurueck, oder null bei Fehler.
   async function persist(): Promise<Host | null> {
@@ -871,7 +1137,7 @@ function HostSheet({
         onUpdated(updated);
         return updated;
       }
-      return await api.hostAdd({ name, hostname, port: safePort, username, auth, ai_policy: "locked" });
+      return await api.hostAdd({ name, hostname, port: safePort, username, auth, ai_policy: "locked", ai_file_policy: "locked" });
     } catch (e) {
       setErr(errText(e));
       return null;
@@ -881,24 +1147,27 @@ function HostSheet({
   }
 
   async function save() {
+    if (!validate()) return;
     const h = await persist();
     if (h) {
       onSaved();
-      onClose();
+      close();
     }
   }
 
   // Erst speichern, dann mit den aktuellen (gespeicherten) Daten verbinden.
   async function saveAndConnect() {
+    if (!validate()) return;
     const h = await persist();
     if (h) {
       onSaved();
-      onConnect(h);
+      setOpen(false);
+      setTimeout(() => onConnect(h), 220);
     }
   }
 
   return (
-    <Sheet open onOpenChange={(o) => !o && onClose()}>
+    <Sheet open={open} onOpenChange={(o) => !o && close()}>
       <SheetContent
         side="right"
         style={{ top: "2.75rem", bottom: "auto", height: "calc(100svh - 2.75rem)" }}
@@ -911,13 +1180,31 @@ function HostSheet({
         <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-5">
           <FormSection title="Address">
             <LabeledField label="Hostname">
-              <Input value={hostname} onChange={(e) => setHostname(e.target.value)} placeholder="example.com" />
+              <Input
+                value={hostname}
+                onChange={(e) => {
+                  setHostname(e.target.value);
+                  clearInvalid("hostname");
+                }}
+                aria-invalid={invalid.has("hostname")}
+                className={shakeClass("hostname")}
+                placeholder="example.com"
+              />
             </LabeledField>
           </FormSection>
 
           <FormSection title="General">
             <LabeledField label="Name">
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="My server" />
+              <Input
+                value={name}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  clearInvalid("name");
+                }}
+                aria-invalid={invalid.has("name")}
+                className={shakeClass("name")}
+                placeholder="My server"
+              />
             </LabeledField>
             <LabeledField label="Port">
               <Input
@@ -934,7 +1221,16 @@ function HostSheet({
 
           <FormSection title="Credentials">
             <LabeledField label="User">
-              <Input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="root" />
+              <Input
+                value={username}
+                onChange={(e) => {
+                  setUsername(e.target.value);
+                  clearInvalid("username");
+                }}
+                aria-invalid={invalid.has("username")}
+                className={shakeClass("username")}
+                placeholder="root"
+              />
             </LabeledField>
             <LabeledField label="Authentication">
               <Select value={authKind} onValueChange={(v) => v && setAuthKind(v as "password" | "key")}>
@@ -969,13 +1265,8 @@ function HostSheet({
                 <LabeledField label="Save as (ID)">
                   <Input value={newSecretId} onChange={(e) => setNewSecretId(e.target.value)} placeholder={authKind === "key" ? "prod-key" : `${username || "user"}@${hostname || "host"}`} />
                 </LabeledField>
-                <LabeledField label={authKind === "key" ? "Private key (paste)" : "Password"}>
-                  <Input
-                    type={authKind === "key" ? "text" : "password"}
-                    value={newSecretValue}
-                    onChange={(e) => setNewSecretValue(e.target.value)}
-                    placeholder={authKind === "key" ? "-----BEGIN OPENSSH PRIVATE KEY-----" : "••••••••"}
-                  />
+                <LabeledField label={authKind === "key" ? "Private key" : "Password"}>
+                  <SecretValueField isKey={authKind === "key"} value={newSecretValue} onChange={setNewSecretValue} />
                 </LabeledField>
               </div>
             )}
@@ -990,7 +1281,7 @@ function HostSheet({
               <Button onClick={saveAndConnect} disabled={busy}>Connect</Button>
             </div>
           ) : (
-            <Button className="w-full" onClick={save} disabled={busy || !name || !hostname || !username}>
+            <Button className="w-full" onClick={save} disabled={busy}>
               {busy && <Spinner className="size-4" />}Add host
             </Button>
           )}
@@ -1006,10 +1297,44 @@ function KeychainView() {
   const [secrets, setSecrets] = useState<SecretMeta[]>([]);
   const [adding, setAdding] = useState(false);
   const [toDelete, setToDelete] = useState<SecretMeta | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [anchor, setAnchor] = useState<number | null>(null);
+  const [batchConfirm, setBatchConfirm] = useState(false);
   const refresh = useCallback(async () => setSecrets(await api.secretList()), []);
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  function clearSel() {
+    setSelected(new Set());
+    setBatchConfirm(false);
+    setAnchor(null);
+  }
+  // Klick: umschalten; Shift-Klick: Bereich vom Anker bis hier.
+  function handleSelect(index: number, id: string, shift: boolean) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (shift && anchor !== null) {
+        const [a, b] = anchor < index ? [anchor, index] : [index, anchor];
+        for (let i = a; i <= b; i++) next.add(secrets[i].id);
+      } else if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+    if (!shift) setAnchor(index);
+  }
+  async function batchDelete() {
+    const ids = [...selected];
+    try {
+      await Promise.all(ids.map((id) => api.secretDelete(id)));
+    } finally {
+      clearSel();
+      refresh();
+    }
+  }
 
   return (
     <div className="px-6 pt-5 pb-12 flex flex-col gap-5">
@@ -1019,16 +1344,42 @@ function KeychainView() {
         action={<Button onClick={() => setAdding(true)}><Plus className="size-4" /> New credential</Button>}
       />
 
+      {selected.size > 0 && (
+        <div className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2 animate-in fade-in-0 slide-in-from-top-1 duration-150">
+          <span className="text-sm font-medium">{selected.size} selected</span>
+          <div className="flex-1" />
+          {batchConfirm ? (
+            <>
+              <span className="text-sm text-muted-foreground">Delete {selected.size}?</span>
+              <Button size="sm" variant="ghost" onClick={batchDelete}>
+                <Check className="size-4 text-destructive" /> Yes
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setBatchConfirm(false)}>No</Button>
+            </>
+          ) : (
+            <Button size="sm" variant="ghost" onClick={() => setBatchConfirm(true)}>
+              <Trash2 className="size-4" /> Delete
+            </Button>
+          )}
+          <Button size="sm" variant="ghost" onClick={clearSel}>Clear</Button>
+        </div>
+      )}
+
       {secrets.length === 0 ? (
         <EmptyState icon={<KeyRound className="size-6" />} title="No credentials yet" hint="Add a key or password; hosts reference them by ID." />
       ) : (
         <div className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(240px,1fr))]">
-          {secrets.map((s) => {
+          {secrets.map((s, i) => {
             const isKey = s.kind === "private_key";
+            const sel = selected.has(s.id);
             return (
               <div
                 key={s.id}
-                className="group relative flex items-center gap-3 rounded-lg border bg-card p-4 transition-colors hover:border-ring"
+                onClick={(ev) => handleSelect(i, s.id, ev.shiftKey)}
+                className={
+                  "group relative flex items-center gap-3 rounded-lg border p-4 transition-colors cursor-pointer select-none " +
+                  (sel ? "border-ring ring-1 ring-ring/40 bg-accent/40" : "bg-card hover:border-ring")
+                }
               >
                 <div
                   className={
@@ -1046,7 +1397,10 @@ function KeychainView() {
                   variant="ghost"
                   size="icon-sm"
                   className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
-                  onClick={() => setToDelete(s)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setToDelete(s);
+                  }}
                   aria-label="Delete credential"
                 >
                   <Trash2 className="size-4" />
@@ -1084,6 +1438,11 @@ function KeychainSheet({ onClose, onSaved }: { onClose: () => void; onSaved: () 
   const [value, setValue] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(true);
+  const close = () => {
+    setOpen(false);
+    setTimeout(onClose, 220);
+  };
 
   async function save() {
     setErr("");
@@ -1091,7 +1450,7 @@ function KeychainSheet({ onClose, onSaved }: { onClose: () => void; onSaved: () 
     try {
       await api.secretPut(id, kind, value);
       onSaved();
-      onClose();
+      close();
     } catch (e) {
       setErr(errText(e));
     } finally {
@@ -1100,7 +1459,7 @@ function KeychainSheet({ onClose, onSaved }: { onClose: () => void; onSaved: () 
   }
 
   return (
-    <Sheet open onOpenChange={(o) => !o && onClose()}>
+    <Sheet open={open} onOpenChange={(o) => !o && close()}>
       <SheetContent
         side="right"
         style={{ top: "2.75rem", bottom: "auto", height: "calc(100svh - 2.75rem)" }}
@@ -1126,12 +1485,7 @@ function KeychainSheet({ onClose, onSaved }: { onClose: () => void; onSaved: () 
             </Select>
           </LabeledField>
           <LabeledField label="Value (encrypted)">
-            <Input
-              type={kind === "password" ? "password" : "text"}
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              placeholder={kind === "private_key" ? "-----BEGIN OPENSSH PRIVATE KEY-----" : "••••••••"}
-            />
+            <SecretValueField isKey={kind === "private_key"} value={value} onChange={setValue} />
           </LabeledField>
           {err && <p className="text-destructive text-sm">{err}</p>}
         </div>
@@ -1248,6 +1602,11 @@ function SnippetSheet({
   const [targets, setTargets] = useState<string[]>(snippet?.target_host_ids ?? []);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(true);
+  const close = () => {
+    setOpen(false);
+    setTimeout(onClose, 220);
+  };
 
   function toggle(id: string) {
     setTargets((t) => (t.includes(id) ? t.filter((x) => x !== id) : [...t, id]));
@@ -1263,7 +1622,7 @@ function SnippetSheet({
         await api.snippetAdd({ label, script, target_host_ids: targets });
       }
       onSaved();
-      onClose();
+      close();
     } catch (e) {
       setErr(errText(e));
     } finally {
@@ -1272,7 +1631,7 @@ function SnippetSheet({
   }
 
   return (
-    <Sheet open onOpenChange={(o) => !o && onClose()}>
+    <Sheet open={open} onOpenChange={(o) => !o && close()}>
       <SheetContent
         side="right"
         style={{ top: "2.75rem", bottom: "auto", height: "calc(100svh - 2.75rem)" }}
@@ -1337,15 +1696,8 @@ function decisionVariant(d: string): "success" | "destructive" | "info" | "secon
   return "secondary";
 }
 
-function LogsView({
-  approvals,
-  onAnswer,
-}: {
-  approvals: ApprovalRequest[];
-  onAnswer: (id: string, approved: boolean) => void;
-}) {
+function LogsView() {
   const [entries, setEntries] = useState<AuditEntry[]>([]);
-  const [tab, setTab] = useState<"activity" | "approvals">("activity");
   const refresh = useCallback(async () => setEntries(await api.auditList()), []);
   useEffect(() => {
     refresh();
@@ -1355,74 +1707,42 @@ function LogsView({
 
   return (
     <div className="px-6 pt-5 pb-12 flex flex-col gap-4">
-      <div className="flex items-center justify-between gap-3">
-        <h2 className="text-lg font-semibold tracking-tight">Logs</h2>
-        <Segmented
-          value={tab}
-          onChange={setTab}
-          size="sm"
-          options={[
-            { value: "activity", label: "Activity" },
-            { value: "approvals", label: approvals.length ? `Approvals (${approvals.length})` : "Approvals" },
-          ]}
-        />
-      </div>
+      <PageHeader title="Logs" subtitle="Every command you run and every AI action, with the result." />
 
-      {tab === "activity" ? (
-        entries.length === 0 ? (
-          <EmptyState icon={<ScrollText className="size-6" />} title="No activity yet" hint="Commands you run and AI actions appear here." />
-        ) : (
-          <div className="rounded-lg border overflow-hidden">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-24">Time</TableHead>
-                  <TableHead className="w-44">Host</TableHead>
-                  <TableHead>Command</TableHead>
-                  <TableHead className="w-24">Source</TableHead>
-                  <TableHead className="w-28">Result</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {entries
-                  .slice()
-                  .reverse()
-                  .map((e) => (
-                    <TableRow key={e.id}>
-                      <TableCell className="text-muted-foreground tabular-nums">{new Date(e.timestamp).toLocaleTimeString()}</TableCell>
-                      <TableCell className="truncate">{e.host_name}</TableCell>
-                      <TableCell className="font-mono text-xs">{e.command}</TableCell>
-                      <TableCell><Badge variant={decisionVariant(e.decision)}>{e.decision}</Badge></TableCell>
-                      <TableCell>
-                        <Badge variant={e.success ? "success" : "destructive"}>
-                          {e.success ? "ok" : "error"}
-                          {e.exit_status != null ? ` (${e.exit_status})` : ""}
-                        </Badge>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-              </TableBody>
-            </Table>
-          </div>
-        )
-      ) : approvals.length === 0 ? (
-        <EmptyState icon={<ScrollText className="size-6" />} title="No pending approvals" hint="Requests from the AI show up here live." />
+      {entries.length === 0 ? (
+        <EmptyState icon={<ScrollText className="size-6" />} title="No activity yet" hint="Commands you run and AI actions appear here." />
       ) : (
-        <div className="flex flex-col gap-3 max-w-2xl">
-          {approvals.map((r) => (
-            <Card key={r.id}>
-              <CardContent className="flex flex-col gap-3 pt-4">
-                <div className="text-sm">
-                  The AI wants to run a command on <span className="font-medium">{r.host_name}</span>.
-                </div>
-                <pre className="overflow-x-auto rounded-md bg-muted p-3 text-sm whitespace-pre-wrap break-all">{r.command}</pre>
-                <div className="flex justify-end gap-2">
-                  <Button variant="outline" onClick={() => onAnswer(r.id, false)}>Deny</Button>
-                  <Button onClick={() => onAnswer(r.id, true)}>Approve</Button>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+        <div className="rounded-lg border overflow-hidden">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-24">Time</TableHead>
+                <TableHead className="w-44">Host</TableHead>
+                <TableHead>Command</TableHead>
+                <TableHead className="w-24">Source</TableHead>
+                <TableHead className="w-28">Result</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {entries
+                .slice()
+                .reverse()
+                .map((e) => (
+                  <TableRow key={e.id}>
+                    <TableCell className="text-muted-foreground tabular-nums">{new Date(e.timestamp).toLocaleTimeString()}</TableCell>
+                    <TableCell className="truncate">{e.host_name}</TableCell>
+                    <TableCell className="font-mono text-xs">{e.command}</TableCell>
+                    <TableCell><Badge variant={decisionVariant(e.decision)}>{e.decision}</Badge></TableCell>
+                    <TableCell>
+                      <Badge variant={e.success ? "success" : "destructive"}>
+                        {e.success ? "ok" : "error"}
+                        {e.exit_status != null ? ` (${e.exit_status})` : ""}
+                      </Badge>
+                    </TableCell>
+                  </TableRow>
+                ))}
+            </TableBody>
+          </Table>
         </div>
       )}
     </div>
@@ -1474,6 +1794,14 @@ function McpView() {
     setTimeout(() => setCopied(false), 1500);
   }
 
+  // Setzt Befehls- und Datei-Policy aller Hosts auf einmal.
+  async function setAll(policy: AiPolicy) {
+    await Promise.all(
+      hosts.flatMap((h) => [api.hostSetPolicy(h.id, policy), api.hostSetFilePolicy(h.id, policy)]),
+    );
+    refresh();
+  }
+
   return (
     <div className="px-6 pt-5 pb-12 max-w-3xl flex flex-col gap-5">
       <div>
@@ -1484,13 +1812,12 @@ function McpView() {
       </div>
 
       <Card>
-        <CardContent className="flex flex-col gap-4">
+        <CardContent className="flex flex-col">
           <div className="flex items-center gap-4">
             <Switch checked={active} onCheckedChange={toggle} aria-label="AI access" />
             <div className="flex-1 min-w-0">
-              <div className="font-medium flex items-center gap-2">
+              <div className="font-medium">
                 {active ? <ShinyText text="AI access" className="font-medium" speed={3} /> : "AI access"}
-                <Badge variant={active ? "success" : "secondary"}>{active ? "ON" : "OFF"}</Badge>
               </div>
               <div className="text-sm text-muted-foreground">
                 {active
@@ -1500,18 +1827,24 @@ function McpView() {
                   : "Turn on to allow AI commands for a limited time."}
               </div>
             </div>
+            <Badge variant={active ? "success" : "secondary"} className="shrink-0">
+              {active ? "ON" : "OFF"}
+            </Badge>
           </div>
-          {!active && (
-            <div className="flex items-center gap-3 border-t pt-4">
-              <span className="text-sm text-muted-foreground">Turn on for</span>
-              <Segmented
-                value={String(aiMinutes)}
-                onChange={(v) => setAiMinutes(Number(v))}
-                size="sm"
-                options={DURATIONS.map((d) => ({ value: d.id, label: d.label }))}
-              />
+          {/* Sanftes Auf-/Zuklappen ueber grid-rows statt hartem Ein-/Ausblenden. */}
+          <div className={"grid transition-[grid-template-rows] duration-200 ease-out " + (active ? "grid-rows-[0fr]" : "grid-rows-[1fr]")}>
+            <div className="overflow-hidden">
+              <div className="flex items-center gap-3 border-t pt-4 mt-4">
+                <span className="text-sm text-muted-foreground">Turn on for</span>
+                <Segmented
+                  value={String(aiMinutes)}
+                  onChange={(v) => setAiMinutes(Number(v))}
+                  size="sm"
+                  options={DURATIONS.map((d) => ({ value: d.id, label: d.label }))}
+                />
+              </div>
             </div>
-          )}
+          </div>
         </CardContent>
       </Card>
 
@@ -1528,12 +1861,26 @@ function McpView() {
           </CardHeader>
           <CardContent className="flex flex-col gap-2">
             <p className="text-sm">Connect Claude Code with:</p>
-            <div className="flex items-start gap-2">
-              <pre className="flex-1 overflow-x-auto rounded-md bg-muted p-3 text-xs whitespace-pre-wrap break-all">{cmd}</pre>
-              <Button size="sm" variant="secondary" onClick={copy}>
-                {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
-                {copied ? "Copied" : "Copy"}
-              </Button>
+            <div className="relative">
+              <pre className="overflow-x-auto rounded-md bg-muted p-3 pr-11 text-xs whitespace-pre-wrap break-all">{cmd}</pre>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    onClick={copy}
+                    aria-label={copied ? "Copied" : "Copy command"}
+                    className="absolute top-2 right-2 bg-background/70 hover:bg-background backdrop-blur-sm"
+                  >
+                    {copied ? (
+                      <Check key="check" className="size-4 text-success animate-in zoom-in-50 duration-150" />
+                    ) : (
+                      <Copy key="copy" className="size-4" />
+                    )}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{copied ? "Copied" : "Copy"}</TooltipContent>
+              </Tooltip>
             </div>
           </CardContent>
         </Card>
@@ -1543,28 +1890,54 @@ function McpView() {
         <CardHeader>
           <CardTitle>Per-host permission</CardTitle>
           <CardDescription>
-            Blocked: AI cannot touch it. Ask: every command needs approval. Free: AI may run freely.
+            Commands and files (SFTP) are gated separately. Blocked: AI cannot touch it. Ask: every
+            request needs approval. Free: AI may act freely.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
+          {hosts.length > 1 && (
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-muted-foreground">Set all:</span>
+              <Button size="xs" variant="outline" onClick={() => setAll("locked")}>Block</Button>
+              <Button size="xs" variant="outline" onClick={() => setAll("confirm")}>Ask</Button>
+              <Button size="xs" variant="outline" onClick={() => setAll("free")}>Free</Button>
+            </div>
+          )}
           {hosts.length === 0 ? (
             <p className="text-sm text-muted-foreground">No hosts yet.</p>
           ) : (
             hosts.map((h) => (
-              <div key={h.id} className="flex items-center justify-between gap-3">
+              <div key={h.id} className="flex flex-col gap-2.5 rounded-lg border p-3">
                 <div className="min-w-0">
                   <div className="text-sm truncate">{h.name}</div>
                   <div className="text-xs text-muted-foreground truncate">{h.username}@{h.hostname}</div>
                 </div>
-                <Segmented
-                  value={h.ai_policy}
-                  size="sm"
-                  onChange={async (p) => {
-                    await api.hostSetPolicy(h.id, p);
-                    refresh();
-                  }}
-                  options={POLICIES.map((p) => ({ value: p, label: POLICY_LABEL[p] }))}
-                />
+                <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground w-16 shrink-0">Commands</span>
+                    <Segmented
+                      value={h.ai_policy}
+                      size="sm"
+                      onChange={async (p) => {
+                        await api.hostSetPolicy(h.id, p);
+                        refresh();
+                      }}
+                      options={POLICIES.map((p) => ({ value: p, label: POLICY_LABEL[p] }))}
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground w-16 shrink-0">Files</span>
+                    <Segmented
+                      value={h.ai_file_policy}
+                      size="sm"
+                      onChange={async (p) => {
+                        await api.hostSetFilePolicy(h.id, p);
+                        refresh();
+                      }}
+                      options={POLICIES.map((p) => ({ value: p, label: POLICY_LABEL[p] }))}
+                    />
+                  </div>
+                </div>
               </div>
             ))
           )}
@@ -1629,9 +2002,24 @@ function TermPreview({ theme }: { theme: ITheme }) {
 }
 
 function SettingsView() {
-  const { theme, setTheme, anim, setAnim, termTheme, setTermTheme, aiMinutes, setAiMinutes } = usePrefs();
+  const {
+    theme,
+    setTheme,
+    animScale,
+    setAnimScale,
+    termTheme,
+    setTermTheme,
+    termColors,
+    setTermColors,
+    aiMinutes,
+    setAiMinutes,
+    sftpShowHidden,
+    setSftpShowHidden,
+    sftpAutoRefresh,
+    setSftpAutoRefresh,
+  } = usePrefs();
   const termIds = Object.keys(TERMINAL_THEMES);
-  const preview = termThemeOf(termTheme).theme;
+  const preview = terminalTheme(termTheme, termColors);
 
   return (
     <div className="px-6 pt-5 pb-12 max-w-3xl flex flex-col gap-5">
@@ -1653,13 +2041,22 @@ function SettingsView() {
               options={THEMES.map((t) => ({ value: t, label: t.charAt(0).toUpperCase() + t.slice(1) }))}
             />
           </SettingRow>
-          <SettingRow label="Animations" hint="Speed of UI motion and transitions.">
-            <Segmented<AnimSpeed>
-              value={anim}
-              onChange={setAnim}
-              size="sm"
-              options={ANIM_SPEEDS.map((a) => ({ value: a, label: a.charAt(0).toUpperCase() + a.slice(1) }))}
-            />
+          <SettingRow label="Animations" hint="Speed of UI motion. 100% is normal, 0% turns it off.">
+            <div className="flex items-center gap-3" data-no-anim-scale>
+              <input
+                type="range"
+                min={ANIM_MIN}
+                max={ANIM_MAX}
+                step={0.05}
+                value={animScale}
+                onChange={(e) => setAnimScale(Number(e.target.value))}
+                aria-label="Animation speed"
+                className="w-40 accent-primary cursor-pointer"
+              />
+              <span className="text-xs text-muted-foreground tabular-nums w-9 text-right">
+                {animScale < 0.05 ? "Off" : `${Math.round(animScale * 100)}%`}
+              </span>
+            </div>
           </SettingRow>
         </CardContent>
       </Card>
@@ -1670,7 +2067,10 @@ function SettingsView() {
           <CardDescription>Color scheme of the terminal emulator. Applies to all sessions.</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          <SettingRow label="Color scheme" hint="Also tints the frame and the sidebar edge.">
+          <SettingRow label="Colors" hint="Render ANSI colors. Off makes the terminal single-colored.">
+            <Switch checked={termColors} onCheckedChange={setTermColors} aria-label="Terminal colors" />
+          </SettingRow>
+          <SettingRow label="Color scheme" hint="Also tints the terminal frame.">
             <Select value={termTheme} onValueChange={setTermTheme}>
               <SelectTrigger className="w-48">
                 <SelectValue />
@@ -1685,6 +2085,21 @@ function SettingsView() {
             </Select>
           </SettingRow>
           <TermPreview theme={preview} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>SFTP</CardTitle>
+          <CardDescription>File browser behaviour, applied to all SFTP sessions.</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-5">
+          <SettingRow label="Show hidden files" hint="Files and folders whose name starts with a dot.">
+            <Switch checked={sftpShowHidden} onCheckedChange={setSftpShowHidden} aria-label="Show hidden files" />
+          </SettingRow>
+          <SettingRow label="Auto-refresh" hint="Re-read the current folder periodically.">
+            <Switch checked={sftpAutoRefresh} onCheckedChange={setSftpAutoRefresh} aria-label="Auto-refresh" />
+          </SettingRow>
         </CardContent>
       </Card>
 
@@ -1756,7 +2171,7 @@ function ApprovalModal({
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Approval required</AlertDialogTitle>
-          <AlertDialogDescription>The AI wants to run a command on {req.host_name}.</AlertDialogDescription>
+          <AlertDialogDescription>The AI requests the following on {req.host_name}. Review it before allowing.</AlertDialogDescription>
         </AlertDialogHeader>
         <pre className="overflow-x-auto rounded-md bg-muted p-3 text-sm whitespace-pre-wrap break-all">{req.command}</pre>
         <AlertDialogFooter>

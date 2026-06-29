@@ -17,6 +17,7 @@ export interface Host {
   username: string;
   auth: AuthMethod;
   ai_policy: AiPolicy;
+  ai_file_policy: AiPolicy;
 }
 
 export interface NewHost {
@@ -26,6 +27,17 @@ export interface NewHost {
   username: string;
   auth: AuthMethod;
   ai_policy: AiPolicy;
+  ai_file_policy: AiPolicy;
+}
+
+export interface FileEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  is_symlink: boolean;
+  size: number;
+  mtime: number | null;
+  permissions: number | null;
 }
 
 export interface AiStatus {
@@ -83,6 +95,13 @@ export const secretPut = (id: string, kind: SecretKind, value: string) =>
 export const secretList = () => invoke<SecretMeta[]>("secret_list");
 export const secretDelete = (id: string) => invoke<void>("secret_delete", { id });
 
+export interface PubkeyInfo {
+  public_key: string;
+  fingerprint: string;
+}
+export const derivePubkey = (privateKey: string) =>
+  invoke<PubkeyInfo>("derive_pubkey", { privateKey });
+
 // Hosts
 export const hostList = () => invoke<Host[]>("host_list");
 export const hostAdd = (host: NewHost) => invoke<Host>("host_add", { host });
@@ -90,6 +109,29 @@ export const hostUpdate = (host: Host) => invoke<void>("host_update", { host });
 export const hostRemove = (id: string) => invoke<void>("host_remove", { id });
 export const hostSetPolicy = (id: string, policy: AiPolicy) =>
   invoke<void>("host_set_policy", { id, policy });
+export const hostSetFilePolicy = (id: string, policy: AiPolicy) =>
+  invoke<void>("host_set_file_policy", { id, policy });
+
+// SFTP-Browser (Nutzer-Sitzungen, per id)
+export const sftpOpen = (id: string, hostId: string) =>
+  invoke<string>("sftp_open", { id, hostId });
+export const sftpList = (id: string, path: string) =>
+  invoke<FileEntry[]>("sftp_list", { id, path });
+export const sftpDownload = (id: string, remote: string, local: string) =>
+  invoke<number>("sftp_download", { id, remote, local });
+export const sftpUpload = (id: string, local: string, remote: string) =>
+  invoke<number>("sftp_upload", { id, local, remote });
+export const sftpReadText = (id: string, path: string) =>
+  invoke<string>("sftp_read_text", { id, path });
+export const sftpWriteText = (id: string, path: string, content: string) =>
+  invoke<void>("sftp_write_text", { id, path, content });
+export const sftpMkdir = (id: string, path: string) =>
+  invoke<void>("sftp_mkdir", { id, path });
+export const sftpRemove = (id: string, path: string, isDir: boolean) =>
+  invoke<void>("sftp_remove", { id, path, isDir });
+export const sftpRename = (id: string, from: string, to: string) =>
+  invoke<void>("sftp_rename", { id, from, to });
+export const sftpClose = (id: string) => invoke<void>("sftp_close", { id });
 
 // Snippets
 export interface Snippet {

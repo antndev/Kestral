@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { readText as clipReadText, writeText as clipWriteText } from "@tauri-apps/plugin-clipboard-manager";
 import { Check, CircleAlert, PlugZap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { usePrefs } from "./lib/prefs";
-import { termThemeOf } from "./lib/terminal-themes";
+import { terminalTheme } from "./lib/terminal-themes";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
 type Stage = "connecting" | "authenticating" | "opening-shell" | "connected" | "error" | "closed";
@@ -42,9 +44,11 @@ export function SshTerminal({ hostId }: { hostId: string }) {
 
   // Aktuelles Farbschema. Per Ref gelesen, damit ein Schemawechsel das Terminal
   // nicht neu aufbaut (das wuerde die Verbindung trennen). Live-Update unten.
-  const { termTheme } = usePrefs();
+  const { termTheme, termColors } = usePrefs();
   const termThemeRef = useRef(termTheme);
   termThemeRef.current = termTheme;
+  const colorsRef = useRef(termColors);
+  colorsRef.current = termColors;
   const termRef = useRef<Terminal | null>(null);
 
   useEffect(() => {
@@ -58,53 +62,62 @@ export function SshTerminal({ hostId }: { hostId: string }) {
       cursorBlink: true,
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
       fontSize: 13,
-      theme: termThemeOf(termThemeRef.current).theme,
+      theme: terminalTheme(termThemeRef.current, colorsRef.current),
     });
     termRef.current = term;
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon());
     term.open(el);
+    // WebGL-Renderer fuer korrektes, schnelles Rendern (inkl. ANSI-Farben).
+    // Faellt bei fehlendem WebGL-Kontext still auf den Standard-Renderer zurueck.
+    try {
+      term.loadAddon(new WebglAddon());
+    } catch {
+      /* ignore */
+    }
 
-    // Copy/Paste wie in gaengigen Terminals.
-    const paste = () => {
-      navigator.clipboard
-        .readText()
-        .then((txt) => {
-          if (!disposed && txt) void invoke("ssh_write", { id: sessionId, data: txt });
-        })
-        .catch(() => {});
+    // Copy/Paste ueber Tauris natives Clipboard (kein Browser-Popup). Einfuegen
+    // geht ueber term.paste(): respektiert Bracketed Paste, fuehrt also nicht
+    // automatisch aus.
+    const paste = async () => {
+      try {
+        const txt = await clipReadText();
+        if (!disposed && txt) term.paste(txt);
+      } catch {
+        /* ignore */
+      }
     };
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
       const k = e.key.toLowerCase();
       if (e.ctrlKey && e.shiftKey && k === "c") {
         const sel = term.getSelection();
-        if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+        if (sel) clipWriteText(sel).catch(() => {});
         return false;
       }
       if (e.ctrlKey && e.shiftKey && k === "v") {
-        paste();
+        void paste();
         return false;
       }
       if (e.ctrlKey && !e.shiftKey && k === "c") {
         const sel = term.getSelection();
         if (sel) {
-          navigator.clipboard.writeText(sel).catch(() => {});
+          clipWriteText(sel).catch(() => {});
           term.clearSelection();
           return false; // bei Auswahl kopieren statt SIGINT
         }
         return true; // sonst Ctrl+C als SIGINT durchlassen
       }
       if (e.ctrlKey && !e.shiftKey && k === "v") {
-        paste();
+        void paste();
         return false;
       }
       return true;
     });
     const onContextMenu = (e: MouseEvent) => {
       e.preventDefault();
-      paste();
+      void paste();
     };
     el.addEventListener("contextmenu", onContextMenu);
 
@@ -228,10 +241,14 @@ export function SshTerminal({ hostId }: { hostId: string }) {
     };
   }, [hostId, gen]);
 
-  // Farbschema live umschalten, ohne die Sitzung neu aufzubauen.
+  // Farbschema und Farb-an/aus live umschalten, ohne die Sitzung neu aufzubauen.
   useEffect(() => {
-    if (termRef.current) termRef.current.options.theme = termThemeOf(termTheme).theme;
-  }, [termTheme]);
+    const t = termRef.current;
+    if (t) {
+      t.options.theme = terminalTheme(termTheme, termColors);
+      t.refresh(0, t.rows - 1);
+    }
+  }, [termTheme, termColors]);
 
   const STEPS: Stage[] = ["connecting", "authenticating", "opening-shell"];
   const connecting = STEPS.includes(status.stage);

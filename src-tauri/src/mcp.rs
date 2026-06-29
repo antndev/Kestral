@@ -28,8 +28,9 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::model::AiPolicy;
+use crate::model::{AiPolicy, AuthMethod, Host, NewHost, NewSnippet, Snippet};
 use crate::state::Services;
+use crate::vault::SecretStore;
 
 /// Reduzierte Host-Ansicht fuer die KI (keine Geheimnis-Verweise).
 #[derive(Serialize)]
@@ -40,6 +41,28 @@ struct HostView {
     port: u16,
     username: String,
     ai_policy: AiPolicy,
+    ai_file_policy: AiPolicy,
+}
+
+/// Baut eine AuthMethod aus den von der KI gelieferten Feldern. Die KI gibt nie
+/// einen Geheimniswert, sie referenziert nur eine bestehende secret_id.
+fn build_auth(kind: &str, secret_id: Option<String>) -> std::result::Result<AuthMethod, String> {
+    match kind {
+        "password" => secret_id
+            .map(|s| AuthMethod::Password { secret_id: s })
+            .ok_or_else(|| "secret_id is required for auth_kind=password".to_string()),
+        "key" => secret_id
+            .map(|s| AuthMethod::Key { secret_id: s })
+            .ok_or_else(|| "secret_id is required for auth_kind=key".to_string()),
+        "agent" => Ok(AuthMethod::Agent),
+        other => Err(format!("unknown auth_kind '{other}', use password, key or agent")),
+    }
+}
+
+fn parse_host_ids(ids: &[String]) -> std::result::Result<Vec<Uuid>, String> {
+    ids.iter()
+        .map(|s| Uuid::parse_str(s).map_err(|_| format!("invalid host id: {s}")))
+        .collect()
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -48,6 +71,84 @@ struct RunCommandArgs {
     host_id: String,
     /// Shell command to execute.
     command: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct CreateHostArgs {
+    /// Display name.
+    name: String,
+    /// Hostname or IP address.
+    hostname: String,
+    /// Port, usually 22.
+    port: u16,
+    /// SSH username.
+    username: String,
+    /// One of "password", "key" or "agent".
+    auth_kind: String,
+    /// Id of an existing credential from list_secrets. Required for password/key. The secret value is never seen or set by the AI.
+    #[serde(default)]
+    secret_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct UpdateHostArgs {
+    /// Id of the host to update (from list_hosts).
+    host_id: String,
+    name: String,
+    hostname: String,
+    port: u16,
+    username: String,
+    /// One of "password", "key" or "agent".
+    auth_kind: String,
+    #[serde(default)]
+    secret_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct CreateSnippetArgs {
+    /// Short label.
+    label: String,
+    /// Shell script body.
+    script: String,
+    /// Optional host ids this snippet targets.
+    #[serde(default)]
+    target_host_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct UpdateSnippetArgs {
+    /// Id of the snippet to update (from list_snippets).
+    snippet_id: String,
+    label: String,
+    script: String,
+    #[serde(default)]
+    target_host_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct SftpListArgs {
+    /// Id of the host (from list_hosts).
+    host_id: String,
+    /// Absolute remote directory path to list.
+    path: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct SftpDownloadArgs {
+    host_id: String,
+    /// Remote file path to read.
+    remote_path: String,
+    /// Local destination path to write.
+    local_path: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct SftpUploadArgs {
+    host_id: String,
+    /// Local file path to read.
+    local_path: String,
+    /// Remote destination path to write.
+    remote_path: String,
 }
 
 #[derive(Clone)]
@@ -84,6 +185,7 @@ impl HelmsmanMcp {
                 port: h.port,
                 username: h.username,
                 ai_policy: h.ai_policy,
+                ai_file_policy: h.ai_file_policy,
             })
             .collect();
         let json = serde_json::to_string_pretty(&views).unwrap_or_else(|_| "[]".into());
@@ -133,6 +235,309 @@ impl HelmsmanMcp {
         let entries = self.services.audit.list_ai();
         let json = serde_json::to_string_pretty(&entries).unwrap_or_else(|_| "[]".into());
         Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    #[tool(description = "List saved snippets (id, label, script, target host ids) as JSON.")]
+    async fn list_snippets(&self) -> Result<CallToolResult, McpError> {
+        if !self.services.policy.is_active() {
+            return Ok(Self::disabled());
+        }
+        let items = self.services.snippets.list();
+        let json = serde_json::to_string_pretty(&items).unwrap_or_else(|_| "[]".into());
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    #[tool(
+        description = "List credential ids and kinds. Never returns secret values. Use an id to wire a host to an existing credential."
+    )]
+    async fn list_secrets(&self) -> Result<CallToolResult, McpError> {
+        if !self.services.policy.is_active() {
+            return Ok(Self::disabled());
+        }
+        match self.services.vault.list_secrets() {
+            Ok(metas) => {
+                let json = serde_json::to_string_pretty(&metas).unwrap_or_else(|_| "[]".into());
+                Ok(CallToolResult::success(vec![Content::text(json)]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    #[tool(
+        description = "Create a new SSH host. AI access stays locked by default; only the user can grant it. The AI never sets a secret value, it only references an existing credential id."
+    )]
+    async fn create_host(
+        &self,
+        Parameters(a): Parameters<CreateHostArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if !self.services.policy.is_active() {
+            return Ok(Self::disabled());
+        }
+        let auth = match build_auth(&a.auth_kind, a.secret_id) {
+            Ok(au) => au,
+            Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
+        };
+        let new = NewHost {
+            name: a.name,
+            hostname: a.hostname,
+            port: a.port,
+            username: a.username,
+            auth,
+            ai_policy: AiPolicy::Locked,
+            ai_file_policy: AiPolicy::Locked,
+        };
+        match self.services.hosts.add(new) {
+            Ok(h) => {
+                self.services.audit.record(
+                    h.id.to_string(),
+                    h.name.clone(),
+                    format!("create host {}@{}:{}", h.username, h.hostname, h.port),
+                    "config",
+                    None,
+                    true,
+                    None,
+                );
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Created host '{}' with id {}. AI access is locked until the user enables it.",
+                    h.name, h.id
+                ))]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    #[tool(
+        description = "Update an existing host's connection fields. The per-host AI policies are preserved and cannot be changed by the AI."
+    )]
+    async fn update_host(
+        &self,
+        Parameters(a): Parameters<UpdateHostArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if !self.services.policy.is_active() {
+            return Ok(Self::disabled());
+        }
+        let id = match Uuid::parse_str(&a.host_id) {
+            Ok(i) => i,
+            Err(_) => {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Invalid host_id: {}",
+                    a.host_id
+                ))]))
+            }
+        };
+        let existing = match self.services.hosts.get(id) {
+            Ok(h) => h,
+            Err(e) => return Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        };
+        let auth = match build_auth(&a.auth_kind, a.secret_id) {
+            Ok(au) => au,
+            Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
+        };
+        let updated = Host {
+            id,
+            name: a.name,
+            hostname: a.hostname,
+            port: a.port,
+            username: a.username,
+            auth,
+            ai_policy: existing.ai_policy,
+            ai_file_policy: existing.ai_file_policy,
+        };
+        match self.services.hosts.update(updated.clone()) {
+            Ok(()) => {
+                self.services.audit.record(
+                    id.to_string(),
+                    updated.name.clone(),
+                    format!(
+                        "update host {}@{}:{}",
+                        updated.username, updated.hostname, updated.port
+                    ),
+                    "config",
+                    None,
+                    true,
+                    None,
+                );
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Updated host '{}'.",
+                    updated.name
+                ))]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    #[tool(description = "Create a snippet (named script), optionally tied to target hosts.")]
+    async fn create_snippet(
+        &self,
+        Parameters(a): Parameters<CreateSnippetArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if !self.services.policy.is_active() {
+            return Ok(Self::disabled());
+        }
+        let targets = match parse_host_ids(&a.target_host_ids) {
+            Ok(t) => t,
+            Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
+        };
+        let new = NewSnippet {
+            label: a.label,
+            script: a.script,
+            target_host_ids: targets,
+        };
+        match self.services.snippets.add(new) {
+            Ok(s) => {
+                self.services.audit.record(
+                    s.id.to_string(),
+                    s.label.clone(),
+                    format!("create snippet '{}'", s.label),
+                    "config",
+                    None,
+                    true,
+                    None,
+                );
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Created snippet '{}' with id {}.",
+                    s.label, s.id
+                ))]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    #[tool(description = "Update an existing snippet by id.")]
+    async fn update_snippet(
+        &self,
+        Parameters(a): Parameters<UpdateSnippetArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if !self.services.policy.is_active() {
+            return Ok(Self::disabled());
+        }
+        let id = match Uuid::parse_str(&a.snippet_id) {
+            Ok(i) => i,
+            Err(_) => {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Invalid snippet_id: {}",
+                    a.snippet_id
+                ))]))
+            }
+        };
+        let targets = match parse_host_ids(&a.target_host_ids) {
+            Ok(t) => t,
+            Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
+        };
+        let updated = Snippet {
+            id,
+            label: a.label,
+            script: a.script,
+            target_host_ids: targets,
+        };
+        match self.services.snippets.update(updated.clone()) {
+            Ok(()) => {
+                self.services.audit.record(
+                    id.to_string(),
+                    updated.label.clone(),
+                    format!("update snippet '{}'", updated.label),
+                    "config",
+                    None,
+                    true,
+                    None,
+                );
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Updated snippet '{}'.",
+                    updated.label
+                ))]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    #[tool(
+        description = "List a remote directory over SFTP. Subject to the per-host file policy (may require approval)."
+    )]
+    async fn sftp_list(
+        &self,
+        Parameters(a): Parameters<SftpListArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let id = match Uuid::parse_str(&a.host_id) {
+            Ok(i) => i,
+            Err(_) => {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Invalid host_id: {}",
+                    a.host_id
+                ))]))
+            }
+        };
+        match self.services.ai_sftp_list(id, &a.path).await {
+            Ok(entries) => {
+                let json = serde_json::to_string_pretty(&entries).unwrap_or_else(|_| "[]".into());
+                Ok(CallToolResult::success(vec![Content::text(json)]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    #[tool(
+        description = "Download a remote file to a local path over SFTP. Subject to the per-host file policy (may require approval)."
+    )]
+    async fn sftp_download(
+        &self,
+        Parameters(a): Parameters<SftpDownloadArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let id = match Uuid::parse_str(&a.host_id) {
+            Ok(i) => i,
+            Err(_) => {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Invalid host_id: {}",
+                    a.host_id
+                ))]))
+            }
+        };
+        match self
+            .services
+            .ai_sftp_download(id, &a.remote_path, &a.local_path)
+            .await
+        {
+            Ok(n) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "Downloaded {n} bytes to {}",
+                a.local_path
+            ))])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    #[tool(
+        description = "Upload a local file to a remote path over SFTP. Subject to the per-host file policy (may require approval)."
+    )]
+    async fn sftp_upload(
+        &self,
+        Parameters(a): Parameters<SftpUploadArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let id = match Uuid::parse_str(&a.host_id) {
+            Ok(i) => i,
+            Err(_) => {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Invalid host_id: {}",
+                    a.host_id
+                ))]))
+            }
+        };
+        match self
+            .services
+            .ai_sftp_upload(id, &a.local_path, &a.remote_path)
+            .await
+        {
+            Ok(n) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "Uploaded {n} bytes to {}",
+                a.remote_path
+            ))])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    /// Standard-Fehlerantwort, wenn der KI-Zugriff global aus ist.
+    fn disabled() -> CallToolResult {
+        CallToolResult::error(vec![Content::text(
+            "AI access is disabled. Enable it in Helmsman first.",
+        )])
     }
 }
 
