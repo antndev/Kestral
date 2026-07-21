@@ -1,34 +1,31 @@
 use serde::{Serialize, Serializer};
 
-/// Zentraler Fehlertyp. Wird an das Frontend als einfacher Text serialisiert,
-/// damit `invoke` im UI einen lesbaren Grund bekommt.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
-    #[error("Tresor ist gesperrt")]
+    #[error("Vault is locked")]
     VaultLocked,
-    #[error("Tresor existiert bereits")]
+    #[error("Vault already exists")]
     VaultExists,
-    #[error("Tresor existiert noch nicht")]
+    #[error("Vault does not exist yet")]
     VaultMissing,
-    #[error("falsches Master-Passwort oder beschaedigter Tresor")]
+    #[error("Wrong master password or corrupted vault")]
     VaultAuth,
-    #[error("nicht gefunden: {0}")]
+    #[error("Not found: {0}")]
     NotFound(String),
-    // Die drei folgenden werden vom MCP-Ablauf (Stufe 3) erzeugt.
     #[allow(dead_code)]
-    #[error("KI-Zugriff ist aus")]
+    #[error("AI access is off")]
     AiDisabled,
     #[allow(dead_code)]
-    #[error("Host ist fuer die KI gesperrt")]
+    #[error("Host is blocked for the AI")]
     HostLocked,
     #[allow(dead_code)]
-    #[error("Freigabe abgelehnt")]
+    #[error("Approval denied")]
     ApprovalDenied,
-    #[error("E/A-Fehler: {0}")]
+    #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("Serialisierungsfehler: {0}")]
+    #[error("Serialization error: {0}")]
     Serde(#[from] serde_json::Error),
-    #[error("Krypto-Fehler")]
+    #[error("Crypto error")]
     Crypto,
     #[error("SSH: {0}")]
     Ssh(String),

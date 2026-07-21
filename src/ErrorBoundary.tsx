@@ -8,7 +8,6 @@ interface State {
   error: Error | null;
 }
 
-/** Faengt Render-Fehler ab, damit nie der ganze Bildschirm schwarz wird. */
 export class ErrorBoundary extends Component<Props, State> {
   state: State = { error: null };
 
@@ -17,7 +16,6 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    // Sichtbar im Webview-Log, hilft beim Debuggen.
     console.error("UI-Fehler:", error, info.componentStack);
   }
 

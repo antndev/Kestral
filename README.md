@@ -1,8 +1,8 @@
-# Helmsman
+# Kestral
 
 Self-hosted SSH client with a built-in MCP server, so an AI can run commands on your
 servers under your control. The AI never sees a private key or password. It only asks
-Helmsman to run a command, and you decide per host whether that needs your approval.
+Kestral to run a command, and you decide per host whether that needs your approval.
 
 ## What it does
 
@@ -39,3 +39,13 @@ npm run build
 
 - `src/` React UI (`App.tsx`, `SshTerminal.tsx`, `components/ui/` ReUI components)
 - `src-tauri/src/` Rust core (`ssh.rs`, `vault.rs`, `mcp.rs`, `policy.rs`, `audit.rs`, ...)
+
+## License
+
+Kestral is source-available, not open source. It is free for personal and other
+noncommercial use under the [PolyForm Noncommercial License 1.0.0](LICENSE): private
+use, homelab, hobby projects, study, and use by nonprofits, schools and government
+bodies. Any commercial use, including internal use inside a for-profit company,
+requires a separate commercial license.
+
+Commercial licensing: write to anton@schmid-koenig.de. Copyright 2026 Anton Schmid-Koenig.

@@ -1,39 +1,90 @@
-use std::sync::Mutex;
+
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Ein Protokolleintrag ueber eine KI-Aktion.
-#[derive(Debug, Clone, Serialize)]
+use crate::vault::Vault;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {
     pub id: String,
     pub timestamp: DateTime<Utc>,
     pub host_id: String,
     pub host_name: String,
     pub command: String,
-    /// "allowed", "approved", "denied" oder "error".
     pub decision: String,
     pub exit_status: Option<i32>,
     pub success: bool,
     pub detail: Option<String>,
 }
 
-/// Maximale Anzahl im Speicher gehaltener Eintraege (gegen unbegrenztes Wachstum).
 const MAX_ENTRIES: usize = 5000;
+const MAX_LINES: usize = 20_000;
 
-/// In-Memory-Protokoll aller KI-Aktionen. Persistenz auf Platte kommt spaeter.
 pub struct AuditLog {
     entries: Mutex<Vec<AuditEntry>>,
+    path: PathBuf,
+    vault: Arc<Vault>,
 }
 
 impl AuditLog {
-    pub fn new() -> Self {
+    pub fn new(path: PathBuf, vault: Arc<Vault>) -> Self {
         Self {
             entries: Mutex::new(Vec::new()),
+            path,
+            vault,
         }
     }
 
+    pub fn load(&self) {
+        let raw = match std::fs::read_to_string(&self.path) {
+            Ok(r) => r,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => {
+                tracing::error!("Audit-Log nicht lesbar: {e}");
+                return;
+            }
+        };
+
+        let mut out = Vec::new();
+        let mut broken = 0usize;
+        for line in raw.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            match self.vault.open_envelope(line.as_bytes()) {
+                Ok((plain, _)) => match serde_json::from_slice::<AuditEntry>(&plain) {
+                    Ok(entry) => out.push(entry),
+                    Err(_) => broken += 1,
+                },
+                Err(_) => broken += 1,
+            }
+        }
+        if broken > 0 {
+            tracing::warn!("{broken} Audit-Zeilen konnten nicht gelesen werden");
+        }
+
+        let total = out.len();
+        if total > MAX_ENTRIES {
+            out.drain(0..total - MAX_ENTRIES);
+        }
+        tracing::info!("{} Audit-Eintraege geladen", out.len());
+        *self.entries.lock().unwrap() = out;
+
+        if total > MAX_LINES {
+            self.compact();
+        }
+    }
+
+    pub fn clear(&self) {
+        self.entries.lock().unwrap().clear();
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn record(
         &self,
         host_id: String,
@@ -55,8 +106,6 @@ impl AuditLog {
             success,
             detail,
         };
-        // Nur unkritische Felder loggen, nicht den ganzen Eintrag (command/detail
-        // koennen vom Nutzer eingefuegte sensible Inhalte enthalten).
         tracing::info!(
             target: "audit",
             id = %entry.id,
@@ -65,6 +114,9 @@ impl AuditLog {
             success = entry.success,
             "KI-Aktion"
         );
+
+        self.append(&entry);
+
         let mut entries = self.entries.lock().unwrap();
         entries.push(entry);
         let len = entries.len();
@@ -73,14 +125,61 @@ impl AuditLog {
         }
     }
 
-    /// Alle Eintraege (fuer die UI-Anzeige).
+    fn append(&self, entry: &AuditEntry) {
+        use std::io::Write;
+        let line = match self.seal_line(entry) {
+            Some(l) => l,
+            None => return,
+        };
+        let opened = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path);
+        match opened {
+            Ok(mut f) => {
+                if let Err(e) = f.write_all(line.as_bytes()) {
+                    tracing::error!("Audit-Eintrag nicht geschrieben: {e}");
+                }
+            }
+            Err(e) => tracing::error!("Audit-Log nicht zu oeffnen: {e}"),
+        }
+    }
+
+    fn seal_line(&self, entry: &AuditEntry) -> Option<String> {
+        let json = serde_json::to_vec(entry).ok()?;
+        match self.vault.seal_envelope(&json) {
+            Ok(sealed) => {
+                let compact: String = String::from_utf8_lossy(&sealed)
+                    .split_whitespace()
+                    .collect();
+                Some(format!("{compact}\n"))
+            }
+            Err(e) => {
+                tracing::warn!("Audit-Eintrag nicht verschluesselbar ({e}), nur im Speicher");
+                None
+            }
+        }
+    }
+
+    fn compact(&self) {
+        let entries = self.entries.lock().unwrap().clone();
+        let mut buf = String::new();
+        for e in &entries {
+            if let Some(line) = self.seal_line(e) {
+                buf.push_str(&line);
+            }
+        }
+        if let Err(e) = crate::util::atomic_write(&self.path, buf.as_bytes()) {
+            tracing::error!("Audit-Log kuerzen fehlgeschlagen: {e}");
+        } else {
+            tracing::info!("Audit-Log auf {} Eintraege gekuerzt", entries.len());
+        }
+    }
+
     pub fn list(&self) -> Vec<AuditEntry> {
         self.entries.lock().unwrap().clone()
     }
 
-    /// Nur KI-relevante Eintraege. Vom Nutzer selbst getippte Terminal-Befehle
-    /// (decision == "user") werden ausgeschlossen, damit die KI ueber
-    /// get_audit_log NIE die manuelle Shell-Historie des Nutzers mitliest.
     pub fn list_ai(&self) -> Vec<AuditEntry> {
         self.entries
             .lock()
@@ -92,8 +191,38 @@ impl AuditLog {
     }
 }
 
-impl Default for AuditLog {
-    fn default() -> Self {
-        Self::new()
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vault::{random_token, SecretStore};
+
+    #[test]
+    fn survives_restart_and_password_change() {
+        let dir = std::env::temp_dir().join(format!("kestral_audit_{}", random_token()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log_path = dir.join("audit.log");
+        let vault = Arc::new(crate::vault::Vault::new(dir.join("vault.json")));
+        vault.create("pw").unwrap();
+
+        let log = AuditLog::new(log_path.clone(), vault.clone());
+        log.record("h1".into(), "homelab".into(), "uptime".into(), "allowed", Some(0), true, None);
+        log.record("h1".into(), "homelab".into(), "rm -rf /".into(), "denied", None, false, None);
+        assert_eq!(log.list().len(), 2);
+
+        let again = AuditLog::new(log_path.clone(), vault.clone());
+        assert!(again.list().is_empty(), "vor dem Entsperren leer");
+        again.load();
+        assert_eq!(again.list().len(), 2, "nach dem Entsperren wieder da");
+        assert_eq!(again.list()[1].command, "rm -rf /");
+
+        vault.change_master("pw", "neu").unwrap();
+        let third = AuditLog::new(log_path.clone(), vault.clone());
+        third.load();
+        assert_eq!(third.list().len(), 2, "ueberlebt den Passwortwechsel");
+
+        third.clear();
+        assert!(third.list().is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1,5 +1,3 @@
-// DotField von reactbits (reactbits.dev), 1:1 uebernommen. Reines Canvas, keine
-// externen Abhaengigkeiten. Punktraster, das auf den Cursor reagiert.
 import { useEffect, useRef, memo } from "react";
 
 const TWO_PI = Math.PI * 2;
@@ -251,7 +249,6 @@ const DotField = memo(
         window.removeEventListener("resize", resize);
         window.removeEventListener("mousemove", onMouseMove);
       };
-      // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     useEffect(() => {

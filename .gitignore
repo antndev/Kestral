@@ -23,3 +23,23 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# IDE-Projektdateien
+.idea/
+
+# Lokale Notizen und Agenten-Anweisungen
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+
+# Tauri-Build und Signierschluessel
+src-tauri/target/
+src-tauri/gen/
+*.pfx
+*.p12
+tauri-key*
+*.key
+
+# Lokale Skripte und Daten
+*.bak
+*.migrated.bak

@@ -1,21 +1,39 @@
 use std::sync::Mutex;
 
 use chrono::{DateTime, Duration, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::model::AiPolicy;
 
-/// Grund einer Ablehnung, damit der Aufrufer ihn nicht erneut (und ggf. mit
-/// abweichendem Ergebnis) ermitteln muss.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct AiCaps {
+    pub list_hosts: bool,
+    pub manage_hosts: bool,
+    pub list_snippets: bool,
+    pub manage_snippets: bool,
+    pub list_secrets: bool,
+    pub audit_log: bool,
+}
+
+impl Default for AiCaps {
+    fn default() -> Self {
+        Self {
+            list_hosts: true,
+            manage_hosts: false,
+            list_snippets: true,
+            manage_snippets: false,
+            list_secrets: true,
+            audit_log: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeniedReason {
-    /// KI-Zugriff global aus oder Timer abgelaufen.
     AiInactive,
-    /// Dieser Host ist fuer die KI gesperrt.
     HostLocked,
 }
 
-/// Ergebnis der Pruefung, ob eine KI-Aktion laufen darf.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gate {
     Allowed,
@@ -23,7 +41,6 @@ pub enum Gate {
     Denied(DeniedReason),
 }
 
-/// Status des globalen KI-Schalters fuer das UI.
 #[derive(Debug, Clone, Serialize)]
 pub struct AiStatus {
     pub active: bool,
@@ -35,9 +52,9 @@ struct Inner {
     enabled: bool,
     expires_at: Option<DateTime<Utc>>,
     default_minutes: i64,
+    caps: AiCaps,
 }
 
-/// Haelt den globalen KI-Schalter und den Auto-Aus-Timer.
 pub struct PolicyEngine {
     inner: Mutex<Inner>,
 }
@@ -49,16 +66,13 @@ impl PolicyEngine {
                 enabled: false,
                 expires_at: None,
                 default_minutes: 30,
+                caps: AiCaps::default(),
             }),
         }
     }
 
-    /// Obergrenze fuer die Freischaltdauer (24h). Verhindert, dass eine extreme
-    /// Eingabe `Duration::minutes`/`Utc::now() +` zum Ueberlauf-Panic bringt und
-    /// dabei den Mutex vergiftet (was das Gate dauerhaft lahmlegen wuerde).
     const MAX_MINUTES: i64 = 24 * 60;
 
-    /// Schaltet den KI-Zugriff fuer eine Dauer (Minuten) frei.
     pub fn enable(&self, minutes: Option<i64>) {
         let mut inner = self.inner.lock().unwrap();
         let mins = minutes
@@ -74,8 +88,6 @@ impl PolicyEngine {
         inner.expires_at = None;
     }
 
-    /// Aktiv, solange eingeschaltet und der Timer nicht abgelaufen ist.
-    /// Laeuft der Timer ab, wird der Schalter hier faul zurueckgesetzt.
     fn check_active(inner: &mut Inner) -> bool {
         if inner.enabled {
             match inner.expires_at {
@@ -96,7 +108,14 @@ impl PolicyEngine {
         Self::check_active(&mut inner)
     }
 
-    /// Liefert active und expires_at konsistent unter einem einzigen Lock.
+    pub fn caps(&self) -> AiCaps {
+        self.inner.lock().unwrap().caps
+    }
+
+    pub fn set_caps(&self, caps: AiCaps) {
+        self.inner.lock().unwrap().caps = caps;
+    }
+
     pub fn status(&self) -> AiStatus {
         let mut inner = self.inner.lock().unwrap();
         let active = Self::check_active(&mut inner);
@@ -107,7 +126,6 @@ impl PolicyEngine {
         }
     }
 
-    /// Entscheidet anhand des globalen Schalters und der Host-Stufe.
     pub fn gate(&self, host_policy: AiPolicy) -> Gate {
         if !self.is_active() {
             return Gate::Denied(DeniedReason::AiInactive);

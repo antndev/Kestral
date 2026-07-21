@@ -1,15 +1,11 @@
 import type { ITheme } from "@xterm/xterm";
 
-// Kuratiertes Set bekannter Terminal-Farbschemata. Jedes ist eine vollstaendige
-// xterm-ITheme. Der Hintergrund (background) steuert zusaetzlich den Rahmen um
-// das Terminal und den Trenn-Rand zur Seitenleiste (siehe --term-bg).
-
 export type TermTheme = { name: string; theme: ITheme };
 export type TermThemeId = string;
 
 export const TERMINAL_THEMES: Record<string, TermTheme> = {
-  "helmsman-dark": {
-    name: "Helmsman Dark",
+  "kestral-dark": {
+    name: "Kestral Dark",
     theme: {
       background: "#1e1e1e",
       foreground: "#d4d4d4",
@@ -192,14 +188,12 @@ export const TERMINAL_THEMES: Record<string, TermTheme> = {
   },
 };
 
-export const DEFAULT_TERM_THEME: TermThemeId = "helmsman-dark";
+export const DEFAULT_TERM_THEME: TermThemeId = "kestral-dark";
 
 export function termThemeOf(id: TermThemeId): TermTheme {
   return TERMINAL_THEMES[id] ?? TERMINAL_THEMES[DEFAULT_TERM_THEME];
 }
 
-/** Liefert das xterm-Theme. Bei colors=false werden alle ANSI-Farben auf den
- *  Vordergrund gelegt, das Terminal wird also einfarbig. */
 export function terminalTheme(id: TermThemeId, colors: boolean): ITheme {
   const base = termThemeOf(id).theme;
   if (colors) return base;

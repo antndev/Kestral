@@ -3,13 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Helmsman</title>
+    <title>Kestral</title>
     <script>
       // Dunkel/Hell frueh setzen, um Aufflackern beim Start zu vermeiden.
-      // Respektiert die gespeicherte Auswahl (helmsman-theme), sonst System.
+      // Respektiert die gespeicherte Auswahl (kestral-theme), sonst System.
       (function () {
         try {
-          const t = localStorage.getItem("helmsman-theme");
+          const t = localStorage.getItem("kestral-theme");
           const dark =
             t === "dark" ||
             ((t === "system" || !t) && window.matchMedia("(prefers-color-scheme: dark)").matches);

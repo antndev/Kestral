@@ -1,11 +1,3 @@
-//! Interaktive SSH-Terminal-Sitzungen (echte PTY-Shell).
-//!
-//! Pro Sitzung wird ein russh-Kanal geoeffnet, eine PTY und eine Shell
-//! angefordert und dann gesplittet: ein Reader-Task schiebt die Ausgabe als
-//! Roh-Bytes ueber einen Tauri-Channel ans Frontend (xterm), die Schreibseite
-//! liegt unter einer id im State und wird von ssh_write/ssh_resize genutzt.
-//! Endet die Gegenstelle, raeumt der Reader sich selbst auf und meldet
-//! "session-closed" ans Frontend.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -21,8 +13,6 @@ use crate::error::{AppError, Result};
 use crate::ssh::ClientHandler;
 use crate::state::AppState;
 
-/// Verbindungs-Phase einer Terminal-Sitzung (fuer das UI, wie bei Termius).
-/// stage: connecting | authenticating | opening-shell | connected | error
 #[derive(Serialize, Clone)]
 struct SessionStatus<'a> {
     id: &'a str,
@@ -37,15 +27,12 @@ type SessionMap = Arc<Mutex<HashMap<String, SessionHandle>>>;
 struct SessionHandle {
     write: Arc<AsyncMutex<WriteHalf>>,
     session: Session,
-    // Wird erst NACH dem Registrieren des Eintrags nachgetragen, daher Option.
     reader: Option<tokio::task::JoinHandle<()>>,
 }
 
-/// Von Tauri verwaltete Terminal-Sitzungen, adressiert per id.
 #[derive(Default)]
 pub struct Sessions(SessionMap);
 
-/// Sitzung sauber beenden: Kanal schliessen, Verbindung trennen, Reader abbrechen.
 async fn teardown(h: SessionHandle) {
     {
         let w = h.write.lock().await;
@@ -61,7 +48,6 @@ async fn teardown(h: SessionHandle) {
     }
 }
 
-/// Tote Sitzung (Schreibfehler) entfernen, beenden und das UI informieren.
 async fn close_dead(app: &tauri::AppHandle, sessions: &Sessions, id: &str) {
     let removed = { sessions.0.lock().unwrap().remove(id) };
     if let Some(h) = removed {
@@ -81,7 +67,6 @@ pub async fn ssh_open_shell(
     rows: u32,
     on_output: Channel<InvokeResponseBody>,
 ) -> Result<()> {
-    // Falls die id bereits belegt ist, alte Sitzung sauber beenden (kein Leak).
     let prev = { sessions.0.lock().unwrap().remove(&id) };
     if let Some(h) = prev {
         teardown(h).await;
@@ -90,7 +75,6 @@ pub async fn ssh_open_shell(
     let hid = Uuid::parse_str(&host_id).map_err(|_| AppError::NotFound(host_id.clone()))?;
     let host = state.services.hosts.get(hid)?;
 
-    // Phasen ans UI melden (wie bei Termius sieht man, wo es gerade haengt).
     let notify = |stage: &str, detail: &str| {
         let _ = app.emit(
             "session-status",
@@ -144,10 +128,6 @@ pub async fn ssh_open_shell(
 
     let (mut read_half, write_half) = channel.split();
 
-    // Eintrag ZUERST registrieren (reader noch leer), damit die Selbst-
-    // Aufraeumung des Readers ihn garantiert findet und kein toter Eintrag
-    // entsteht, falls die Gegenstelle sofort schliesst. Einen evtl. waehrend
-    // des Verbindens fuer dieselbe id eingefuegten Eintrag sauber beenden.
     let displaced = {
         sessions.0.lock().unwrap().insert(
             id.clone(),
@@ -162,7 +142,6 @@ pub async fn ssh_open_shell(
         teardown(h).await;
     }
 
-    // Reader-Task: Ausgabe streamen; raeumt sich am Ende selbst auf.
     let map = sessions.0.clone();
     let task_id = id.clone();
     let app_for_reader = app.clone();
@@ -181,18 +160,15 @@ pub async fn ssh_open_shell(
                 _ => {}
             }
         }
-        // Gegenstelle hat geschlossen: eigenen Eintrag entfernen und UI informieren.
         let removed = { map.lock().unwrap().remove(&task_id) };
         drop(removed);
         let _ = app_for_reader.emit("session-closed", &task_id);
     });
 
-    // Reader-Handle in den (evtl. schon wieder entfernten) Eintrag nachtragen.
     {
         let mut map = sessions.0.lock().unwrap();
         match map.get_mut(&id) {
             Some(h) => h.reader = Some(reader),
-            // Reader war schneller und hat sich bereits selbst entfernt.
             None => reader.abort(),
         }
     }

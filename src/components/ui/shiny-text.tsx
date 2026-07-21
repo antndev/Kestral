@@ -1,4 +1,3 @@
-// ShinyText von reactbits (reactbits.dev), 1:1 uebernommen.
 import React, { useState, useCallback, useEffect, useRef } from "react";
 import { motion, useMotionValue, useAnimationFrame, useTransform } from "motion/react";
 
@@ -83,7 +82,6 @@ const ShinyText: React.FC<ShinyTextProps> = ({
     directionRef.current = direction === "left" ? 1 : -1;
     elapsedRef.current = 0;
     progress.set(0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [direction]);
 
   const backgroundPosition = useTransform(progress, (p) => `${150 - p * 2}% center`);

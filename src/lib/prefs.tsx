@@ -4,25 +4,20 @@ import { MotionConfig } from "motion/react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { TERMINAL_THEMES, DEFAULT_TERM_THEME, termThemeOf, type TermThemeId } from "./terminal-themes";
 
-// Zentrale, lokal gespeicherte Benutzereinstellungen. Ein einziger Provider haelt
-// Theme, Animationsgeschwindigkeit, Terminal-Farbschema und die AI-Standarddauer,
-// wendet die Seiteneffekte an (dark-Klasse, data-anim, --term-bg) und stellt
-// alles ueber usePrefs() bereit.
-
 export type Theme = "system" | "light" | "dark";
 
-// Animationsgeschwindigkeit als stufenloser Faktor. 1 = normal, 0 = aus.
 export const ANIM_MIN = 0;
 export const ANIM_MAX = 1.5;
 export const ANIM_DEFAULT = 1;
 
-const THEME_KEY = "helmsman-theme";
-const ANIM_KEY = "helmsman-anim";
-const TERM_KEY = "helmsman-term-theme";
-const AI_MIN_KEY = "helmsman-ai-minutes";
-const SFTP_HIDDEN_KEY = "helmsman-sftp-hidden";
-const SFTP_AUTOREFRESH_KEY = "helmsman-sftp-autorefresh";
-const TERM_COLORS_KEY = "helmsman-term-colors";
+const THEME_KEY = "kestral-theme";
+const ANIM_KEY = "kestral-anim";
+const TERM_KEY = "kestral-term-theme";
+const AI_MIN_KEY = "kestral-ai-minutes";
+const SFTP_HIDDEN_KEY = "kestral-sftp-hidden";
+const SFTP_AUTOREFRESH_KEY = "kestral-sftp-autorefresh";
+const AI_AUTO_KEY = "kestral-ai-auto-enable";
+const TERM_COLORS_KEY = "kestral-term-colors";
 
 export const THEMES: Theme[] = ["system", "light", "dark"];
 
@@ -37,23 +32,18 @@ function readAnimScale(): number {
 
 async function applyTheme(t: Theme) {
   const win = getCurrentWindow();
-  // Bei "system" das Fenster dem OS folgen lassen (null). Nur so spiegelt
-  // prefers-color-scheme wieder das echte OS und nicht ein vorher gesetztes Theme.
   try {
     await win.setTheme(t === "light" ? "light" : t === "dark" ? "dark" : null);
   } catch {
-    /* nicht im Tauri-Kontext */
   }
   let dark: boolean;
   if (t === "light") dark = false;
   else if (t === "dark") dark = true;
   else {
-    // Effektives OS-Theme bevorzugt ueber Tauri abfragen, sonst Media Query.
     let resolved: string | null = null;
     try {
       resolved = await win.theme();
     } catch {
-      /* ignore */
     }
     dark = resolved ? resolved === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches;
   }
@@ -76,6 +66,8 @@ type Prefs = {
   setAnimScale: (v: number) => void;
   aiMinutes: number;
   setAiMinutes: (m: number) => void;
+  aiAutoEnable: boolean;
+  setAiAutoEnable: (v: boolean) => void;
   sftpShowHidden: boolean;
   setSftpShowHidden: (v: boolean) => void;
   sftpAutoRefresh: boolean;
@@ -101,7 +93,9 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
     const v = Number(localStorage.getItem(AI_MIN_KEY));
     return Number.isFinite(v) && v > 0 ? v : 30;
   });
-  // Standard: versteckte Dateien zeigen und automatisch aktualisieren (an).
+  const [aiAutoEnable, setAiAutoEnableState] = useState<boolean>(
+    () => localStorage.getItem(AI_AUTO_KEY) === "true",
+  );
   const [sftpShowHidden, setSftpShowHiddenState] = useState<boolean>(
     () => localStorage.getItem(SFTP_HIDDEN_KEY) !== "false",
   );
@@ -125,8 +119,6 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const root = document.documentElement;
     root.style.setProperty("--anim-scale", String(animScale));
-    // Globaler Override nur wenn vom Normalwert abweichend, sonst behalten die
-    // Komponenten ihre eigens abgestimmten Dauern.
     root.toggleAttribute("data-anim-scaled", Math.abs(animScale - 1) > 0.001);
   }, [animScale]);
 
@@ -155,6 +147,10 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(SFTP_HIDDEN_KEY, String(v));
     setSftpShowHiddenState(v);
   };
+  const setAiAutoEnable = (v: boolean) => {
+    localStorage.setItem(AI_AUTO_KEY, String(v));
+    setAiAutoEnableState(v);
+  };
   const setSftpAutoRefresh = (v: boolean) => {
     localStorage.setItem(SFTP_AUTOREFRESH_KEY, String(v));
     setSftpAutoRefreshState(v);
@@ -177,6 +173,8 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
         setTermColors,
         aiMinutes,
         setAiMinutes,
+        aiAutoEnable,
+        setAiAutoEnable,
         sftpShowHidden,
         setSftpShowHidden,
         sftpAutoRefresh,

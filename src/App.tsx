@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -18,11 +18,14 @@ import {
   TerminalSquare,
   Settings,
   Folder,
-  Home,
   ClipboardPaste,
+  Import,
+  Play,
   X,
 } from "lucide-react";
 import { readText as clipReadText, writeText as clipWriteText } from "@tauri-apps/plugin-clipboard-manager";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { homeDir, join } from "@tauri-apps/api/path";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,7 +38,6 @@ import {
   CardTitle,
   CardDescription,
   CardContent,
-  CardFooter,
 } from "@/components/ui/card";
 import {
   AlertDialog,
@@ -64,6 +66,8 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Terminal as XTerm } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
 import {
   Table,
   TableHeader,
@@ -73,7 +77,6 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { Spinner } from "@/components/ui/spinner";
 import {
   CommandDialog,
@@ -85,25 +88,24 @@ import {
 
 import * as api from "./api";
 import type {
+  AiCaps,
   AiPolicy,
   AiStatus,
   ApprovalRequest,
   AuditEntry,
+  CommandOutput,
   AuthMethod,
   Host,
-  McpInfo,
   SecretKind,
   SecretMeta,
   Snippet,
 } from "./api";
 import { SshTerminal } from "./SshTerminal";
 import { SftpBrowser } from "./SftpBrowser";
-import { usePrefs, THEMES, ANIM_MIN, ANIM_MAX } from "./lib/prefs";
+import { usePrefs, THEMES } from "./lib/prefs";
 import type { Theme } from "./lib/prefs";
 import { TERMINAL_THEMES, terminalTheme } from "./lib/terminal-themes";
 import type { ITheme } from "@xterm/xterm";
-
-/* ----------------------------- helpers ----------------------------- */
 
 function errText(e: unknown): string {
   return typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
@@ -122,11 +124,9 @@ const NAV: { id: Section; label: string; icon: typeof Server }[] = [
   { id: "hosts", label: "Hosts", icon: HardDrive },
   { id: "logs", label: "Logs", icon: ScrollText },
   { id: "keychain", label: "Keychain", icon: KeyRound },
-  { id: "snippets", label: "Snippets", icon: Code },
-  { id: "mcp", label: "MCP", icon: Cpu },
+  { id: "snippets", label: "Scripts", icon: Code },
+  { id: "mcp", label: "AI access", icon: Cpu },
 ];
-
-/* ----------------------------- theme + prefs ----------------------------- */
 
 const DURATIONS = [
   { id: "15", label: "15m" },
@@ -135,11 +135,19 @@ const DURATIONS = [
   { id: "240", label: "4h" },
 ];
 
-/* ----------------------------- root ----------------------------- */
-
 export default function App() {
   const [exists, setExists] = useState<boolean | null>(null);
   const [unlocked, setUnlocked] = useState(false);
+
+  useEffect(() => {
+    const onContextMenu = (e: MouseEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (el?.closest("input, textarea, [contenteditable='true']")) return;
+      e.preventDefault();
+    };
+    document.addEventListener("contextmenu", onContextMenu);
+    return () => document.removeEventListener("contextmenu", onContextMenu);
+  }, []);
 
   const refreshVault = useCallback(async () => {
     setExists(await api.vaultExists());
@@ -160,8 +168,6 @@ export default function App() {
   if (!unlocked) return <Unlock exists={exists} onUnlocked={refreshVault} />;
   return <Shell onLock={refreshVault} />;
 }
-
-/* ----------------------------- unlock ----------------------------- */
 
 function Unlock({ exists, onUnlocked }: { exists: boolean; onUnlocked: () => void }) {
   const [pw, setPw] = useState("");
@@ -188,7 +194,7 @@ function Unlock({ exists, onUnlocked }: { exists: boolean; onUnlocked: () => voi
   }
 
   return (
-    <div className="relative h-screen w-screen bg-background text-foreground flex items-center justify-center p-4 overflow-hidden">
+    <div className="relative h-screen w-screen bg-background text-foreground flex items-center justify-center p-4 overflow-hidden animate-in fade-in duration-500">
       <div className="pointer-events-none absolute inset-0 [mask-image:radial-gradient(circle_at_center,transparent_12%,black_68%)]">
         <DotField
           dotSpacing={18}
@@ -196,7 +202,7 @@ function Unlock({ exists, onUnlocked }: { exists: boolean; onUnlocked: () => voi
           bulgeStrength={55}
           gradientFrom="rgba(150,150,162,0.5)"
           gradientTo="rgba(150,150,162,0.16)"
-          glowColor="rgba(255,255,255,0.05)"
+          glowColor="transparent"
         />
       </div>
       <div className="relative w-full max-w-sm">
@@ -209,19 +215,21 @@ function Unlock({ exists, onUnlocked }: { exists: boolean; onUnlocked: () => voi
                 : "Set a master password. You will need it every time you open the app."}
             </CardDescription>
           </CardHeader>
-          <CardContent className="flex flex-col gap-5">
+          <CardContent className="flex flex-col gap-4">
             <div className="flex flex-col gap-3" onKeyDown={(e) => e.key === "Enter" && submit()}>
               <div className="flex flex-col gap-1.5">
                 <Label className="text-xs font-medium text-muted-foreground">Master password</Label>
-                <Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="••••••••" autoFocus disabled={busy} />
+                <Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="••••••••" autoFocus disabled={busy} aria-invalid={!!err} />
               </div>
               {!exists && (
                 <div className="flex flex-col gap-1.5">
                   <Label className="text-xs font-medium text-muted-foreground">Repeat password</Label>
-                  <Input type="password" value={pw2} onChange={(e) => setPw2(e.target.value)} placeholder="••••••••" disabled={busy} />
+                  <Input type="password" value={pw2} onChange={(e) => setPw2(e.target.value)} placeholder="••••••••" disabled={busy} aria-invalid={!!err} />
                 </div>
               )}
-              {err && <p className="text-destructive text-sm">{err}</p>}
+              <p className={"-mt-1 min-h-4 text-xs leading-4 " + (err ? "text-destructive" : "invisible")}>
+                {err || "·"}
+              </p>
             </div>
             {!exists && (
               <ul className="flex flex-col gap-2 text-xs text-muted-foreground border-t pt-4">
@@ -230,33 +238,30 @@ function Unlock({ exists, onUnlocked }: { exists: boolean; onUnlocked: () => voi
                 <li className="flex items-center gap-2"><Server className="size-3.5 shrink-0 text-foreground/70" />Stays on your machine. No cloud, no telemetry.</li>
               </ul>
             )}
-          </CardContent>
-          <CardFooter>
             <Button className="w-full" size="lg" disabled={!pw || busy} onClick={submit}>
               {busy && <Spinner className="size-4" />}
               {exists ? "Unlock" : "Create vault"}
             </Button>
-          </CardFooter>
+          </CardContent>
         </Card>
       </div>
     </div>
   );
 }
 
-/* ----------------------------- shell ----------------------------- */
-
-type SessionTab = { tabId: string; host: Host };
-/** Aktiver oberer Tab: Start-Workspace, SFTP-Workspace oder eine Verbindung (tabId). */
-type TopTab = "start" | "sftp" | string;
+type SessionTab = { tabId: string; host: Host; kind: "terminal" | "sftp" };
+type TopTab = "start" | string;
 
 function Shell({ onLock }: { onLock: () => void }) {
+  const { aiAutoEnable, aiMinutes } = usePrefs();
   const [section, setSection] = useState<Section>("hosts");
   const [sessions, setSessions] = useState<SessionTab[]>([]);
   const [topTab, setTopTab] = useState<TopTab>("start");
-  const [sftpHost, setSftpHost] = useState<Host | null>(null);
   const [aiActive, setAiActive] = useState(false);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
+  const [dataWarnings, setDataWarnings] = useState<string[]>([]);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [locking, setLocking] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -265,7 +270,6 @@ function Shell({ onLock }: { onLock: () => void }) {
         const s = await api.aiStatus();
         if (alive) setAiActive(s.active);
       } catch {
-        /* ignore */
       }
     };
     tick();
@@ -277,6 +281,15 @@ function Shell({ onLock }: { onLock: () => void }) {
   }, []);
 
   useEffect(() => {
+    api.dataWarnings().then(setDataWarnings).catch(() => {});
+    if (aiAutoEnable) {
+      api
+        .aiStatus()
+        .then((st) => {
+          if (!st.active) void api.aiEnable(aiMinutes);
+        })
+        .catch(() => {});
+    }
     const un = listen<ApprovalRequest>("approval-request", (e) => {
       setApprovals((q) => (q.find((r) => r.id === e.payload.id) ? q : [...q, e.payload]));
     });
@@ -304,7 +317,6 @@ function Shell({ onLock }: { onLock: () => void }) {
     try {
       await api.approvalRespond(id, approved);
     } catch {
-      /* ignore */
     } finally {
       setApprovals((q) => q.filter((r) => r.id !== id));
     }
@@ -312,109 +324,137 @@ function Shell({ onLock }: { onLock: () => void }) {
 
   function openSession(host: Host) {
     const tabId = crypto.randomUUID();
-    setSessions((s) => [...s, { tabId, host }]);
+    setSessions((s) => [...s, { tabId, host, kind: "terminal" }]);
     setTopTab(tabId);
   }
   function openSftp(host: Host) {
-    setSftpHost(host);
-    setTopTab("sftp");
+    const existing = sessions.find((s) => s.kind === "sftp" && s.host.id === host.id);
+    if (existing) {
+      setTopTab(existing.tabId);
+      return;
+    }
+    const tabId = crypto.randomUUID();
+    setSessions((s) => [...s, { tabId, host, kind: "sftp" }]);
+    setTopTab(tabId);
   }
   function closeSession(tabId: string) {
     setSessions((s) => s.filter((t) => t.tabId !== tabId));
     setTopTab((cur) => (cur === tabId ? "start" : cur));
   }
+  const dragTabId = useRef<string | null>(null);
+  function reorderTab(targetId: string) {
+    const from = dragTabId.current;
+    dragTabId.current = null;
+    if (!from || from === targetId) return;
+    setSessions((s) => {
+      const arr = [...s];
+      const fi = arr.findIndex((t) => t.tabId === from);
+      const ti = arr.findIndex((t) => t.tabId === targetId);
+      if (fi < 0 || ti < 0) return arr;
+      const [moved] = arr.splice(fi, 1);
+      arr.splice(ti, 0, moved);
+      return arr;
+    });
+  }
   function onHostUpdated(h: Host) {
     setSessions((s) => s.map((t) => (t.host.id === h.id ? { ...t, host: h } : t)));
-    setSftpHost((cur) => (cur?.id === h.id ? h : cur));
   }
   function onHostDeleted(id: string) {
     const activeIsDeleted = sessions.find((x) => x.tabId === topTab)?.host.id === id;
     if (activeIsDeleted) setTopTab("start");
     setSessions((s) => s.filter((t) => t.host.id !== id));
-    setSftpHost((cur) => (cur?.id === id ? null : cur));
   }
   function goSection(s: Section) {
     setSection(s);
     setTopTab("start");
   }
-  async function lock() {
-    await api.vaultLock();
-    onLock();
+  function lock() {
+    if (locking) return;
+    setLocking(true);
+    void api.vaultLock();
+    window.setTimeout(onLock, 700);
   }
 
-  // Sidebar in Start und SFTP sichtbar (gleiches Layout, ruhiger Wechsel), nur
-  // bei offener Terminal-Verbindung weg, damit der Inhalt voll Breite bekommt.
-  const showSidebar = topTab === "start" || topTab === "sftp";
-  const workspaceTabs = (
-    <>
-      <WorkspaceTab label="Start" icon={Home} active={topTab === "start"} onSelect={() => setTopTab("start")} />
-      <WorkspaceTab label="SFTP" icon={Folder} active={topTab === "sftp"} onSelect={() => setTopTab("sftp")} />
-    </>
-  );
-
   return (
-    <div className="flex flex-col h-screen overflow-hidden bg-background text-foreground">
+    <div className="flex h-screen overflow-hidden bg-background text-foreground">
+      {locking && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-background/70 backdrop-blur-md animate-in fade-in duration-300">
+          <div className="flex flex-col items-center gap-4">
+            <div className="relative grid place-items-center">
+              <span className="absolute size-16 rounded-2xl bg-foreground/10 animate-ping" />
+              <div className="relative size-16 rounded-2xl bg-card border shadow-xl grid place-items-center animate-in zoom-in-50 duration-500">
+                <Lock className="size-7" />
+              </div>
+            </div>
+            <div className="text-sm text-muted-foreground animate-in fade-in slide-in-from-bottom-2 duration-500">Locking…</div>
+          </div>
+        </div>
+      )}
+      {dataWarnings.length > 0 && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 max-w-xl rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 shadow-lg backdrop-blur-sm">
+          {dataWarnings.map((w) => (
+            <p key={w} className="text-sm text-destructive">
+              {w}
+            </p>
+          ))}
+          <button
+            className="mt-2 text-xs underline text-muted-foreground hover:text-foreground"
+            onClick={() => setDataWarnings([])}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {approvals[0] && <ApprovalModal req={approvals[0]} onAnswer={answerApproval} />}
       <ConnectPalette open={paletteOpen} onOpenChange={setPaletteOpen} onConnect={openSession} />
 
-      {/* Globale Tableiste. Der linke Block ist immer gleich breit (wie die Sidebar),
-          damit nichts horizontal springt und die Trennlinie fluchtet. */}
-      <div className="h-11 flex items-stretch border-b shrink-0 bg-sidebar">
-        <div className="w-48 shrink-0 flex items-center justify-center gap-1.5 px-2 border-r border-sidebar-border">
-          {workspaceTabs}
+      <aside className="w-48 shrink-0 flex flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
+        <nav className="flex-1 overflow-y-auto px-2 pb-2 pt-1 flex flex-col gap-0.5">
+          {NAV.map((n) => (
+            <NavButton
+              key={n.id}
+              icon={n.icon}
+              label={n.id === "mcp" && aiActive ? <ShinyText text={n.label} speed={3} className="font-medium" /> : n.label}
+              active={topTab === "start" && section === n.id}
+              onClick={() => goSection(n.id)}
+            />
+          ))}
+        </nav>
+        <div className="p-2 flex flex-col gap-0.5 border-t">
+          <NavButton
+            icon={Settings}
+            label="Settings"
+            active={topTab === "start" && section === "settings"}
+            onClick={() => goSection("settings")}
+          />
+          <NavButton icon={Lock} label="Lock" active={false} onClick={lock} />
         </div>
-        <div className="flex items-center gap-1 px-2 min-w-0 flex-1">
+      </aside>
+
+      <div className="flex-1 min-w-0 flex flex-col">
+        <div className="h-11 flex items-center gap-1 px-2 border-b shrink-0 bg-sidebar">
           <div className="flex items-center gap-1 min-w-0 flex-1 overflow-x-auto no-scrollbar">
             {sessions.map((t) => (
               <ConnTab
                 key={t.tabId}
                 label={t.host.name}
+                kind={t.kind}
                 active={topTab === t.tabId}
                 onSelect={() => setTopTab(t.tabId)}
                 onClose={() => closeSession(t.tabId)}
+                onDragStartTab={() => (dragTabId.current = t.tabId)}
+                onDropTab={() => reorderTab(t.tabId)}
               />
             ))}
           </div>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon-sm" onClick={() => setPaletteOpen(true)} aria-label="New connection">
-                <Plus className="size-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Connect (Ctrl+K)</TooltipContent>
-          </Tooltip>
+          <Button variant="ghost" size="icon-sm" onClick={() => setPaletteOpen(true)} aria-label="New connection">
+            <Plus className="size-4" />
+          </Button>
         </div>
-      </div>
-
-      <div className="flex flex-1 min-h-0">
-        {showSidebar && (
-          <aside className="w-48 shrink-0 flex flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
-            <nav className="flex-1 overflow-y-auto p-2 flex flex-col gap-0.5">
-              {NAV.map((n) => (
-                <NavButton
-                  key={n.id}
-                  icon={n.icon}
-                  label={n.id === "mcp" && aiActive ? <ShinyText text={n.label} speed={3} className="font-medium" /> : n.label}
-                  active={topTab === "start" && section === n.id}
-                  onClick={() => goSection(n.id)}
-                />
-              ))}
-            </nav>
-            <div className="p-2 flex flex-col gap-0.5 border-t">
-              <NavButton
-                icon={Settings}
-                label="Settings"
-                active={topTab === "start" && section === "settings"}
-                onClick={() => goSection("settings")}
-              />
-              <NavButton icon={Lock} label="Lock" active={false} onClick={lock} />
-            </div>
-          </aside>
-        )}
 
         <main className="flex-1 min-h-0 relative">
-          {/* Start-Workspace */}
-          <div className={topTab === "start" ? "h-full overflow-y-auto" : "hidden"}>
+          <div className={topTab === "start" ? "absolute inset-0 overflow-y-auto" : "hidden"}>
             <div key={section} className="animate-in fade-in-0 slide-in-from-bottom-2 duration-300 ease-out">
               {section === "hosts" ? (
                 <HostsView onOpen={openSession} onOpenSftp={openSftp} onHostUpdated={onHostUpdated} onHostDeleted={onHostDeleted} />
@@ -432,15 +472,13 @@ function Shell({ onLock }: { onLock: () => void }) {
             </div>
           </div>
 
-          {/* SFTP-Workspace mit Host-Auswahl */}
-          <div className={topTab === "sftp" ? "absolute inset-0" : "hidden"}>
-            <SftpWorkspace host={sftpHost} onPickHost={setSftpHost} />
-          </div>
-
-          {/* Verbindungs-Tabs (Terminals), bleiben gemountet damit die Sitzung haelt */}
           {sessions.map((t) => (
             <div key={t.tabId} className={topTab === t.tabId ? "absolute inset-0" : "hidden"}>
-              <SshTerminal hostId={t.host.id} />
+              {t.kind === "sftp" ? (
+                <SftpBrowser tabId={t.tabId} host={t.host} active={topTab === t.tabId} />
+              ) : (
+                <SshTerminal hostId={t.host.id} />
+              )}
             </div>
           ))}
         </main>
@@ -449,57 +487,53 @@ function Shell({ onLock }: { onLock: () => void }) {
   );
 }
 
-/** Dauerhafter oberer Tab (Start, SFTP). Kein Schliessen-Knopf. */
-function WorkspaceTab({
-  label,
-  icon: Icon,
-  active,
-  onSelect,
-}: {
-  label: string;
-  icon: typeof Server;
-  active: boolean;
-  onSelect: () => void;
-}) {
-  return (
-    <button
-      onClick={onSelect}
-      className={
-        "inline-flex items-center justify-center gap-1.5 px-4 h-8 rounded-md shrink-0 text-sm whitespace-nowrap transition-colors " +
-        (active
-          ? "bg-accent text-foreground shadow-sm ring-1 ring-border"
-          : "text-muted-foreground hover:text-foreground hover:bg-accent/50")
-      }
-    >
-      <Icon className="size-3.5 shrink-0" />
-      <span className={active ? "font-medium" : ""}>{label}</span>
-    </button>
-  );
-}
-
-/** Verbindungs-Tab (Terminal) mit Schliessen-Knopf. */
 function ConnTab({
   label,
+  kind,
   active,
   onSelect,
   onClose,
+  onDragStartTab,
+  onDropTab,
 }: {
   label: string;
+  kind: "terminal" | "sftp";
   active: boolean;
   onSelect: () => void;
   onClose: () => void;
+  onDragStartTab: () => void;
+  onDropTab: () => void;
 }) {
+  const Icon = kind === "sftp" ? Folder : TerminalSquare;
+  const [over, setOver] = useState(false);
   return (
     <div
       onClick={onSelect}
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.effectAllowed = "move";
+        onDragStartTab();
+      }}
+      onDragEnd={() => setOver(false)}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setOver(true);
+      }}
+      onDragLeave={() => setOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setOver(false);
+        onDropTab();
+      }}
       className={
-        "group inline-flex items-center gap-1.5 pl-2.5 pr-1 h-8 rounded-md shrink-0 cursor-pointer text-sm whitespace-nowrap transition-colors " +
+        "group inline-flex items-center gap-1.5 pl-2.5 pr-1 h-8 rounded-md shrink-0 cursor-pointer text-sm whitespace-nowrap transition-colors animate-in fade-in-0 zoom-in-95 duration-200 " +
+        (over ? "ring-1 ring-ring " : "") +
         (active
-          ? "bg-accent text-foreground shadow-sm ring-1 ring-border"
-          : "text-muted-foreground hover:text-foreground hover:bg-accent/50")
+          ? "bg-background text-foreground shadow-sm ring-1 ring-border dark:bg-accent dark:ring-white/10"
+          : "text-muted-foreground hover:text-foreground hover:bg-accent/40")
       }
     >
-      <TerminalSquare className="size-3.5 shrink-0" />
+      <Icon className="size-3.5 shrink-0" />
       <span className="whitespace-nowrap">{label}</span>
       <button
         onClick={(e) => {
@@ -515,7 +549,6 @@ function ConnTab({
   );
 }
 
-/** Eintrag in der immer offenen Seitenleiste. */
 function NavButton({
   icon: Icon,
   label,
@@ -545,48 +578,6 @@ function NavButton({
     </button>
   );
 }
-
-/** SFTP-Workspace: Host oben auswaehlen, darunter der Dateibrowser. */
-function SftpWorkspace({ host, onPickHost }: { host: Host | null; onPickHost: (h: Host | null) => void }) {
-  const [hosts, setHosts] = useState<Host[]>([]);
-  useEffect(() => {
-    api.hostList().then(setHosts).catch(() => setHosts([]));
-  }, []);
-  return (
-    <div className="h-full flex flex-col">
-      <div className="flex items-center gap-2 px-3 h-11 border-b shrink-0 bg-sidebar/40">
-        <span className="text-sm text-muted-foreground shrink-0">Host</span>
-        <Select value={host?.id ?? ""} onValueChange={(id) => onPickHost(hosts.find((h) => h.id === id) ?? null)}>
-          <SelectTrigger className="w-60 h-8">
-            <SelectValue placeholder="Select a host to browse…" />
-          </SelectTrigger>
-          <SelectContent>
-            {hosts.map((h) => (
-              <SelectItem key={h.id} value={h.id}>
-                {h.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-      <div className="flex-1 min-h-0">
-        {host ? (
-          <SftpBrowser key={host.id} tabId={`sftp-ws-${host.id}`} host={host} />
-        ) : (
-          <div className="h-full flex items-center justify-center">
-            <EmptyState
-              icon={<Folder className="size-6" />}
-              title="No host selected"
-              hint="Pick a host above to browse its files over SFTP."
-            />
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ----------------------------- connect palette ----------------------------- */
 
 function ConnectPalette({
   open,
@@ -630,8 +621,6 @@ function ConnectPalette({
   );
 }
 
-/* ----------------------------- hosts ----------------------------- */
-
 function EmptyState({ title, hint, icon }: { title: string; hint?: string; icon?: ReactNode }) {
   return (
     <div className="flex flex-col items-center justify-center gap-3 py-20 text-center animate-in fade-in-0 zoom-in-95 duration-500">
@@ -658,33 +647,34 @@ function PageHeader({ title, subtitle, action }: { title: string; subtitle?: str
   );
 }
 
-/** Segmentierte Auswahl mit gleitendem Aktiv-Indikator. Die Position kommt aus
- *  dem Index (CSS-Transform), nicht aus einer Layout-Animation, laeuft also beim
- *  Scrollen nicht nach. Gleich breite Zellen, damit der Schieber exakt passt. */
 function Segmented<T extends string>({
   value,
   onChange,
   options,
   size = "default",
+  fluid = false,
+  bare = false,
 }: {
   value: T;
   onChange: (v: T) => void;
   options: { value: T; label: ReactNode }[];
   size?: "sm" | "default";
+  fluid?: boolean;
+  bare?: boolean;
 }) {
   const h = size === "sm" ? "h-7" : "h-8";
   const count = options.length;
   const activeIndex = options.findIndex((o) => o.value === value);
   return (
     <div
-      className="relative inline-grid rounded-lg bg-muted p-1"
+      className={`relative rounded-lg p-[3px] ${bare ? "" : "bg-muted"} ${fluid ? "grid w-full" : "inline-grid"}`}
       style={{ gridTemplateColumns: `repeat(${count}, minmax(0, 1fr))` }}
     >
       {activeIndex >= 0 && (
         <span
           aria-hidden
-          className="absolute top-1 bottom-1 left-1 rounded-md bg-accent shadow-sm ring-1 ring-border transition-transform duration-200 ease-out"
-          style={{ width: `calc((100% - 0.5rem) / ${count})`, transform: `translateX(${activeIndex * 100}%)` }}
+          className="absolute top-[3px] bottom-[3px] left-[3px] rounded-md bg-background ring-1 ring-border shadow-sm dark:bg-accent dark:ring-white/10 transition-transform duration-200 ease-out"
+          style={{ width: `calc((100% - 6px) / ${count})`, transform: `translateX(${activeIndex * 100}%)` }}
         />
       )}
       {options.map((o) => {
@@ -704,6 +694,8 @@ function Segmented<T extends string>({
   );
 }
 
+const CARD = "bg-card hover:border-ring transition-colors";
+
 function HostsView({
   onOpen,
   onOpenSftp,
@@ -719,9 +711,6 @@ function HostsView({
   const [query, setQuery] = useState("");
   const [panel, setPanel] = useState<null | "new" | Host>(null);
   const [toDelete, setToDelete] = useState<Host | null>(null);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [anchor, setAnchor] = useState<number | null>(null);
-  const [batchConfirm, setBatchConfirm] = useState(false);
 
   const refresh = useCallback(async () => setHosts(await api.hostList()), []);
   useEffect(() => {
@@ -739,39 +728,6 @@ function HostsView({
     );
   }, [hosts, query]);
 
-  function clearSel() {
-    setSelected(new Set());
-    setBatchConfirm(false);
-    setAnchor(null);
-  }
-  function handleSelect(index: number, id: string, shift: boolean) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (shift && anchor !== null) {
-        const [a, b] = anchor < index ? [anchor, index] : [index, anchor];
-        for (let i = a; i <= b; i++) next.add(filtered[i].id);
-      } else if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
-    });
-    if (!shift) setAnchor(index);
-  }
-  async function batchDelete() {
-    const ids = [...selected];
-    try {
-      for (const id of ids) {
-        await api.hostRemove(id);
-        onHostDeleted(id);
-      }
-    } finally {
-      clearSel();
-      refresh();
-    }
-  }
-
   return (
     <div className="px-6 pt-5 pb-12 flex flex-col gap-5">
       <div className="flex items-center gap-3">
@@ -780,7 +736,7 @@ function HostsView({
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Find a host or ssh user@hostname…"
+            placeholder="Search hosts…"
             className="flex-1 bg-transparent outline-none text-sm placeholder:text-muted-foreground"
           />
         </div>
@@ -788,27 +744,6 @@ function HostsView({
           <Plus className="size-4" /> New host
         </Button>
       </div>
-
-      {selected.size > 0 && (
-        <div className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2 animate-in fade-in-0 slide-in-from-top-1 duration-150">
-          <span className="text-sm font-medium">{selected.size} selected</span>
-          <div className="flex-1" />
-          {batchConfirm ? (
-            <>
-              <span className="text-sm text-muted-foreground">Delete {selected.size}?</span>
-              <Button size="sm" variant="ghost" onClick={batchDelete}>
-                <Check className="size-4 text-destructive" /> Yes
-              </Button>
-              <Button size="sm" variant="ghost" onClick={() => setBatchConfirm(false)}>No</Button>
-            </>
-          ) : (
-            <Button size="sm" variant="ghost" onClick={() => setBatchConfirm(true)}>
-              <Trash2 className="size-4" /> Delete
-            </Button>
-          )}
-          <Button size="sm" variant="ghost" onClick={clearSel}>Clear</Button>
-        </div>
-      )}
 
       {filtered.length === 0 ? (
         <EmptyState
@@ -818,12 +753,10 @@ function HostsView({
         />
       ) : (
         <div className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(240px,1fr))]">
-          {filtered.map((h, i) => (
+          {filtered.map((h) => (
             <HostCard
               key={h.id}
               host={h}
-              selected={selected.has(h.id)}
-              onSelect={(shift) => handleSelect(i, h.id, shift)}
               onConnect={() => onOpen(h)}
               onSftp={() => onOpenSftp(h)}
               onEdit={() => setPanel(h)}
@@ -869,16 +802,12 @@ function HostsView({
 
 function HostCard({
   host,
-  selected,
-  onSelect,
   onConnect,
   onSftp,
   onEdit,
   onDelete,
 }: {
   host: Host;
-  selected: boolean;
-  onSelect: (shift: boolean) => void;
   onConnect: () => void;
   onSftp: () => void;
   onEdit: () => void;
@@ -886,12 +815,8 @@ function HostCard({
 }) {
   return (
     <div
-      onClick={(e) => onSelect(e.shiftKey)}
       onDoubleClick={onConnect}
-      className={
-        "group relative flex flex-col gap-3 rounded-lg border p-4 transition-colors cursor-pointer select-none " +
-        (selected ? "border-ring ring-1 ring-ring/40 bg-accent/40" : "bg-card hover:border-ring")
-      }
+      className={"group relative flex flex-col gap-3 rounded-lg border p-4 select-none " + CARD}
     >
       <div className="absolute top-2 right-2 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
         <Button variant="ghost" size="icon-sm" onClick={(e) => { e.stopPropagation(); onEdit(); }} aria-label="Edit host">
@@ -944,8 +869,6 @@ function LabeledField({ label, children }: { label: string; children: ReactNode 
   );
 }
 
-/** Eingabe fuer einen Geheimniswert. Private Keys sind mehrzeilig, daher eine
- *  Textarea (ein einzeiliges Input verschluckt die Zeilenumbrueche). */
 function SecretValueField({
   isKey,
   value,
@@ -958,7 +881,6 @@ function SecretValueField({
   const [derived, setDerived] = useState<{ public_key: string; fingerprint: string } | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // Aus dem Private Key automatisch Public Key und Fingerprint ableiten (debounced).
   useEffect(() => {
     if (!isKey || !value.includes("PRIVATE KEY")) {
       setDerived(null);
@@ -982,7 +904,6 @@ function SecretValueField({
       const t = await clipReadText();
       if (t) onChange(t);
     } catch {
-      /* ignore */
     }
   }
   async function copyPub() {
@@ -992,7 +913,6 @@ function SecretValueField({
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
-      /* ignore */
     }
   }
 
@@ -1089,12 +1009,10 @@ function HostSheet({
       return n;
     });
   }
-  // Pflichtfelder pruefen. Bei Fehlern rot markieren und kurz wackeln.
   function validate(): boolean {
     const bad = new Set<string>();
     if (!name.trim()) bad.add("name");
     if (!hostname.trim()) bad.add("hostname");
-    if (!username.trim()) bad.add("username");
     setInvalid(bad);
     if (bad.size > 0) {
       setShaking(false);
@@ -1105,15 +1023,12 @@ function HostSheet({
   }
   const shakeClass = (key: string) => (shaking && invalid.has(key) ? "animate-shake" : "");
 
-  // Sanftes Schliessen: erst open=false (Radix spielt die Ausblend-Animation),
-  // dann nach der Dauer wirklich aushaengen.
   const [open, setOpen] = useState(true);
   const close = () => {
     setOpen(false);
     setTimeout(onClose, 220);
   };
 
-  // Persistiert den Host (neu oder bearbeitet) und gibt ihn zurueck, oder null bei Fehler.
   async function persist(): Promise<Host | null> {
     setErr("");
     setBusy(true);
@@ -1131,13 +1046,14 @@ function HostSheet({
         auth = authKind === "key" ? { kind: "key", secret_id: secretId } : { kind: "password", secret_id: secretId };
       }
       const safePort = Number.isFinite(port) ? Math.min(65535, Math.max(1, Math.trunc(port))) : 22;
+      const user = username.trim() || "root";
       if (editing && host) {
-        const updated = { ...host, name, hostname, port: safePort, username, auth };
+        const updated = { ...host, name, hostname, port: safePort, username: user, auth };
         await api.hostUpdate(updated);
         onUpdated(updated);
         return updated;
       }
-      return await api.hostAdd({ name, hostname, port: safePort, username, auth, ai_policy: "locked", ai_file_policy: "locked" });
+      return await api.hostAdd({ name, hostname, port: safePort, username: user, auth, ai_policy: "locked", ai_file_policy: "locked" });
     } catch (e) {
       setErr(errText(e));
       return null;
@@ -1155,7 +1071,6 @@ function HostSheet({
     }
   }
 
-  // Erst speichern, dann mit den aktuellen (gespeicherten) Daten verbinden.
   async function saveAndConnect() {
     if (!validate()) return;
     const h = await persist();
@@ -1291,95 +1206,43 @@ function HostSheet({
   );
 }
 
-/* ----------------------------- keychain ----------------------------- */
-
 function KeychainView() {
   const [secrets, setSecrets] = useState<SecretMeta[]>([]);
   const [adding, setAdding] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [toDelete, setToDelete] = useState<SecretMeta | null>(null);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [anchor, setAnchor] = useState<number | null>(null);
-  const [batchConfirm, setBatchConfirm] = useState(false);
   const refresh = useCallback(async () => setSecrets(await api.secretList()), []);
   useEffect(() => {
     refresh();
   }, [refresh]);
-
-  function clearSel() {
-    setSelected(new Set());
-    setBatchConfirm(false);
-    setAnchor(null);
-  }
-  // Klick: umschalten; Shift-Klick: Bereich vom Anker bis hier.
-  function handleSelect(index: number, id: string, shift: boolean) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (shift && anchor !== null) {
-        const [a, b] = anchor < index ? [anchor, index] : [index, anchor];
-        for (let i = a; i <= b; i++) next.add(secrets[i].id);
-      } else if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
-    });
-    if (!shift) setAnchor(index);
-  }
-  async function batchDelete() {
-    const ids = [...selected];
-    try {
-      await Promise.all(ids.map((id) => api.secretDelete(id)));
-    } finally {
-      clearSel();
-      refresh();
-    }
-  }
 
   return (
     <div className="px-6 pt-5 pb-12 flex flex-col gap-5">
       <PageHeader
         title="Keychain"
         subtitle="Keys and passwords, encrypted in the vault. Hosts reference them by ID."
-        action={<Button onClick={() => setAdding(true)}><Plus className="size-4" /> New credential</Button>}
-      />
-
-      {selected.size > 0 && (
-        <div className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2 animate-in fade-in-0 slide-in-from-top-1 duration-150">
-          <span className="text-sm font-medium">{selected.size} selected</span>
-          <div className="flex-1" />
-          {batchConfirm ? (
-            <>
-              <span className="text-sm text-muted-foreground">Delete {selected.size}?</span>
-              <Button size="sm" variant="ghost" onClick={batchDelete}>
-                <Check className="size-4 text-destructive" /> Yes
-              </Button>
-              <Button size="sm" variant="ghost" onClick={() => setBatchConfirm(false)}>No</Button>
-            </>
-          ) : (
-            <Button size="sm" variant="ghost" onClick={() => setBatchConfirm(true)}>
-              <Trash2 className="size-4" /> Delete
+        action={
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => setImporting(true)}>
+              <Import className="size-4" /> Import
             </Button>
-          )}
-          <Button size="sm" variant="ghost" onClick={clearSel}>Clear</Button>
-        </div>
-      )}
+            <Button onClick={() => setAdding(true)}>
+              <Plus className="size-4" /> New credential
+            </Button>
+          </div>
+        }
+      />
 
       {secrets.length === 0 ? (
         <EmptyState icon={<KeyRound className="size-6" />} title="No credentials yet" hint="Add a key or password; hosts reference them by ID." />
       ) : (
         <div className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(240px,1fr))]">
-          {secrets.map((s, i) => {
+          {secrets.map((s) => {
             const isKey = s.kind === "private_key";
-            const sel = selected.has(s.id);
             return (
               <div
                 key={s.id}
-                onClick={(ev) => handleSelect(i, s.id, ev.shiftKey)}
-                className={
-                  "group relative flex items-center gap-3 rounded-lg border p-4 transition-colors cursor-pointer select-none " +
-                  (sel ? "border-ring ring-1 ring-ring/40 bg-accent/40" : "bg-card hover:border-ring")
-                }
+                className={"group relative flex items-center gap-3 rounded-lg border p-4 select-none " + CARD}
               >
                 <div
                   className={
@@ -1412,6 +1275,7 @@ function KeychainView() {
       )}
 
       {adding && <KeychainSheet onClose={() => setAdding(false)} onSaved={refresh} />}
+      {importing && <ImportVaultSheet onClose={() => setImporting(false)} onSaved={refresh} />}
 
       {toDelete && (
         <ConfirmDialog
@@ -1499,12 +1363,113 @@ function KeychainSheet({ onClose, onSaved }: { onClose: () => void; onSaved: () 
   );
 }
 
-/* ----------------------------- snippets ----------------------------- */
+function ImportVaultSheet({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [path, setPath] = useState("");
+  const [master, setMaster] = useState("");
+  const [err, setErr] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(true);
+  const close = () => {
+    setOpen(false);
+    setTimeout(onClose, 220);
+  };
+
+  useEffect(() => {
+    homeDir()
+      .then((h) => join(h, ".kestral", "_backup_roaming", "vault.json"))
+      .then(setPath)
+      .catch(() => {});
+  }, []);
+
+  async function browse() {
+    try {
+      const sel = await openDialog({
+        multiple: false,
+        filters: [{ name: "Vault", extensions: ["json"] }],
+      });
+      if (typeof sel === "string") setPath(sel);
+    } catch {
+    }
+  }
+
+  async function run() {
+    setErr("");
+    setNote("");
+    setBusy(true);
+    try {
+      const ids = await api.vaultImport(path, master);
+      onSaved();
+      setMaster("");
+      setNote(
+        ids.length === 0
+          ? "Nothing new. This vault already has every credential from that file."
+          : `Imported ${ids.length}: ${ids.join(", ")}`,
+      );
+    } catch (e) {
+      setErr(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Sheet open={open} onOpenChange={(o) => !o && close()}>
+      <SheetContent
+        side="right"
+        style={{ top: "2.75rem", bottom: "auto", height: "calc(100svh - 2.75rem)" }}
+        className="w-[400px] sm:max-w-[400px] flex flex-col gap-0 p-0"
+      >
+        <SheetHeader>
+          <SheetTitle>Import from vault file</SheetTitle>
+          <SheetDescription className="sr-only">
+            Copy missing credentials from another vault file into this one.
+          </SheetDescription>
+        </SheetHeader>
+        <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-4">
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            Copies credentials this vault is missing from another vault file (e.g. a backup).
+            Existing ones are kept. The master password decrypts the source inside the core; secret
+            values never leave it.
+          </p>
+          <LabeledField label="Vault file">
+            <div className="flex gap-2">
+              <Input
+                value={path}
+                onChange={(e) => setPath(e.target.value)}
+                placeholder="…/vault.json"
+              />
+              <Button variant="outline" type="button" onClick={browse}>
+                Browse
+              </Button>
+            </div>
+          </LabeledField>
+          <LabeledField label="Master password of that file">
+            <Input
+              type="password"
+              value={master}
+              onChange={(e) => setMaster(e.target.value)}
+              placeholder="••••••••"
+            />
+          </LabeledField>
+          {err && <p className="text-destructive text-sm">{err}</p>}
+          {note && <p className="text-sm text-muted-foreground">{note}</p>}
+        </div>
+        <SheetFooter>
+          <Button className="w-full" onClick={run} disabled={busy || !path || !master}>
+            {busy && <Spinner className="size-4" />}Import
+          </Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
+  );
+}
 
 function SnippetsView() {
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [hosts, setHosts] = useState<Host[]>([]);
   const [panel, setPanel] = useState<null | "new" | Snippet>(null);
+  const [ran, setRan] = useState<{ id: string; label: string; results: RunResult[] } | null>(null);
   const [toDelete, setToDelete] = useState<Snippet | null>(null);
 
   const refresh = useCallback(async () => {
@@ -1517,33 +1482,69 @@ function SnippetsView() {
 
   const hostName = (id: string) => hosts.find((h) => h.id === id)?.name ?? id.slice(0, 8);
 
+  async function runSnippet(s: Snippet) {
+    const targets = hosts.filter((h) => s.target_host_ids.includes(h.id));
+    if (targets.length === 0) {
+      setRan({ id: s.id, label: s.label, results: [] });
+      return;
+    }
+    setRan({
+      id: s.id,
+      label: s.label,
+      results: targets.map((h) => ({ hostId: h.id, hostName: h.name, pending: true })),
+    });
+    await Promise.all(
+      targets.map(async (h) => {
+        const done = (r: Partial<RunResult>) =>
+          setRan((cur) =>
+            cur == null
+              ? cur
+              : {
+                  ...cur,
+                  results: cur.results.map((x) =>
+                    x.hostId === h.id ? { ...x, pending: false, ...r } : x,
+                  ),
+                },
+          );
+        try {
+          done({ out: await api.runCommandUi(h.id, s.script, true) });
+        } catch (e) {
+          done({ error: errText(e) });
+        }
+      }),
+    );
+  }
+
   return (
     <div className="px-6 pt-5 pb-12 flex flex-col gap-5">
       <PageHeader
-        title="Snippets"
+        title="Scripts"
         subtitle="Saved scripts, scoped to the hosts you choose."
-        action={<Button onClick={() => setPanel("new")}><Plus className="size-4" /> New snippet</Button>}
+        action={<Button onClick={() => setPanel("new")}><Plus className="size-4" /> New script</Button>}
       />
 
       {snippets.length === 0 ? (
-        <EmptyState icon={<Code className="size-6" />} title="No snippets yet" hint="Save scripts you run often and scope them to hosts." />
+        <EmptyState icon={<Code className="size-6" />} title="No scripts yet" hint="Save scripts you run often and scope them to hosts." />
       ) : (
         <div className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(260px,1fr))]">
           {snippets.map((s) => (
             <div
               key={s.id}
-              onClick={() => setPanel(s)}
-              className="group relative rounded-lg border bg-card p-4 cursor-pointer transition-colors hover:border-ring"
+              onDoubleClick={() => runSnippet(s)}
+              className={"group relative rounded-lg border p-4 cursor-pointer select-none " + CARD}
             >
               <div className="absolute top-2 right-2 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                <Button variant="ghost" size="icon-sm" onClick={(e) => { e.stopPropagation(); setPanel(s); }} aria-label="Edit snippet">
+                <Button variant="ghost" size="icon-sm" onClick={(e) => { e.stopPropagation(); runSnippet(s); }} aria-label="Run script">
+                  <Play className="size-4" />
+                </Button>
+                <Button variant="ghost" size="icon-sm" onClick={(e) => { e.stopPropagation(); setPanel(s); }} aria-label="Edit script">
                   <Pencil className="size-4" />
                 </Button>
-                <Button variant="ghost" size="icon-sm" onClick={(e) => { e.stopPropagation(); setToDelete(s); }} aria-label="Delete snippet">
+                <Button variant="ghost" size="icon-sm" onClick={(e) => { e.stopPropagation(); setToDelete(s); }} aria-label="Delete script">
                   <Trash2 className="size-4" />
                 </Button>
               </div>
-              <div className="font-medium truncate text-sm pr-12">{s.label}</div>
+              <div className="font-medium truncate text-sm pr-20">{s.label}</div>
               <pre className="mt-2 text-xs font-mono whitespace-pre-wrap text-muted-foreground line-clamp-3">{s.script}</pre>
               {s.target_host_ids.length > 0 && (
                 <div className="mt-3 flex flex-wrap gap-1">
@@ -1554,6 +1555,30 @@ function SnippetsView() {
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {ran && (
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center gap-2 border-t pt-4">
+            <span className="text-sm font-medium">Output · {ran.label}</span>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="ml-auto"
+              onClick={() => setRan(null)}
+              aria-label="Clear output"
+            >
+              <X className="size-4" />
+            </Button>
+          </div>
+          {ran.results.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No target hosts on this script. Open it and pick where it should run.
+            </p>
+          ) : (
+            ran.results.map((r) => <RunResultBlock key={r.hostId} result={r} />)
+          )}
         </div>
       )}
 
@@ -1568,12 +1593,13 @@ function SnippetsView() {
 
       {toDelete && (
         <ConfirmDialog
-          title="Delete snippet"
+          title="Delete script"
           message={`Delete "${toDelete.label}"?`}
           onConfirm={async () => {
             try {
               await api.snippetDelete(toDelete.id);
             } finally {
+              setRan((cur) => (cur?.id === toDelete.id ? null : cur));
               setToDelete(null);
               refresh();
             }
@@ -1638,11 +1664,11 @@ function SnippetSheet({
         className="w-[400px] sm:max-w-[400px] flex flex-col gap-0 p-0"
       >
         <SheetHeader>
-          <SheetTitle>{editing ? "Edit snippet" : "New snippet"}</SheetTitle>
-          <SheetDescription className="sr-only">Configure the snippet.</SheetDescription>
+          <SheetTitle>{editing ? "Edit script" : "New script"}</SheetTitle>
+          <SheetDescription className="sr-only">Configure the script.</SheetDescription>
         </SheetHeader>
         <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-5">
-          <FormSection title="Snippet">
+          <FormSection title="Script">
             <LabeledField label="Name">
               <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Update & reboot" />
             </LabeledField>
@@ -1679,7 +1705,7 @@ function SnippetSheet({
         </div>
         <SheetFooter>
           <Button className="w-full" onClick={save} disabled={busy || !label || !script}>
-            {editing ? "Save" : "Save snippet"}
+            {editing ? "Save" : "Save script"}
           </Button>
         </SheetFooter>
       </SheetContent>
@@ -1687,7 +1713,104 @@ function SnippetSheet({
   );
 }
 
-/* ----------------------------- logs ----------------------------- */
+type RunResult = {
+  hostId: string;
+  hostName: string;
+  pending?: boolean;
+  out?: CommandOutput;
+  error?: string;
+};
+
+function TerminalOutput({ text }: { text: string }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const { termTheme, termColors } = usePrefs();
+  const rows = Math.min(24, Math.max(3, text.split(String.fromCharCode(10)).length));
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const term = new XTerm({
+      convertEol: true,
+      disableStdin: true,
+      cursorBlink: false,
+      cursorInactiveStyle: "none",
+      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      fontSize: 12,
+      theme: terminalTheme(termTheme, termColors),
+      scrollback: 5000,
+    });
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open(el);
+    try {
+      fit.fit();
+    } catch {
+    }
+    term.write(text);
+    const ro = new ResizeObserver(() => {
+      try {
+        fit.fit();
+      } catch {
+      }
+    });
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      term.dispose();
+    };
+  }, [text, termTheme, termColors]);
+
+  return <div ref={ref} className="overflow-hidden rounded" style={{ height: rows * 16 + 8 }} />;
+}
+
+function RunResultBlock({ result }: { result: RunResult }) {
+  const failed =
+    result.error != null ||
+    (result.out != null && result.out.exit_status !== 0 && result.out.exit_status !== null);
+  const label = result.pending
+    ? "running…"
+    : result.error
+      ? "failed"
+      : `exit ${result.out?.exit_status ?? "?"}`;
+
+  return (
+    <div className="rounded-md border">
+      <div className="flex items-center gap-2 border-b px-3 py-2">
+        <span className="text-sm font-medium truncate">{result.hostName}</span>
+        <span
+          className={
+            "ml-auto shrink-0 rounded px-1.5 py-0.5 text-xs " +
+            (result.pending
+              ? "bg-muted text-muted-foreground"
+              : failed
+                ? "bg-destructive/15 text-destructive"
+                : "bg-success/15 text-success")
+          }
+        >
+          {label}
+        </span>
+      </div>
+      <div className="px-3 py-2">
+        {result.pending && <p className="text-xs text-muted-foreground">waiting for the host…</p>}
+        {result.error && <p className="text-xs text-destructive">{result.error}</p>}
+        {result.out?.stdout && <TerminalOutput text={result.out.stdout} />}
+        {result.out?.stderr && (
+          <pre
+            className={
+              "mt-2 max-h-32 overflow-auto rounded p-2 text-xs font-mono whitespace-pre-wrap " +
+              (failed ? "bg-destructive/10 text-destructive" : "bg-muted text-muted-foreground")
+            }
+          >
+            {result.out.stderr}
+          </pre>
+        )}
+        {result.out && !result.out.stdout && !result.out.stderr && (
+          <p className="text-xs text-muted-foreground">No output.</p>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function decisionVariant(d: string): "success" | "destructive" | "info" | "secondary" {
   if (d === "denied" || d === "error") return "destructive";
@@ -1706,7 +1829,7 @@ function LogsView() {
   }, [refresh]);
 
   return (
-    <div className="px-6 pt-5 pb-12 flex flex-col gap-4">
+    <div className="px-6 pt-5 pb-12 flex flex-col gap-5">
       <PageHeader title="Logs" subtitle="Every command you run and every AI action, with the result." />
 
       {entries.length === 0 ? (
@@ -1749,14 +1872,18 @@ function LogsView() {
   );
 }
 
-/* ----------------------------- mcp ----------------------------- */
-
 function McpView() {
   const { aiMinutes, setAiMinutes } = usePrefs();
   const [status, setStatus] = useState<AiStatus | null>(null);
-  const [info, setInfo] = useState<McpInfo | null>(null);
   const [hosts, setHosts] = useState<Host[]>([]);
-  const [copied, setCopied] = useState(false);
+  const [caps, setCaps] = useState<AiCaps | null>(null);
+  const [connecting, setConnecting] = useState(false);
+  const [rotating, setRotating] = useState(false);
+  const [connectMsg, setConnectMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [installing, setInstalling] = useState(false);
+  const [installMsg, setInstallMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [skillOk, setSkillOk] = useState(false);
+  const [regs, setRegs] = useState<api.Registration[] | null>(null);
 
   const refresh = useCallback(async () => {
     setStatus(await api.aiStatus());
@@ -1764,12 +1891,22 @@ function McpView() {
   }, []);
   useEffect(() => {
     refresh();
-    api.mcpInfo().then(setInfo);
+    api.aiCaps().then(setCaps);
+    api.skillInstalled().then(setSkillOk).catch(() => {});
+    api.mcpListRegistrations().then(setRegs).catch(() => setRegs([]));
     const t = setInterval(() => api.aiStatus().then(setStatus), 5000);
     return () => clearInterval(t);
   }, [refresh]);
 
+  async function setCap(key: keyof AiCaps, val: boolean) {
+    if (!caps) return;
+    const next = { ...caps, [key]: val };
+    setCaps(next);
+    await api.aiSetCaps(next);
+  }
+
   const active = status?.active ?? false;
+  const mcpReg = regs?.find((r) => r.is_this_app) ?? null;
 
   async function toggle(on: boolean) {
     if (on) await api.aiEnable(aiMinutes);
@@ -1784,17 +1921,79 @@ function McpView() {
     return Math.max(1, Math.round(ms / 60000));
   }, [active, status]);
 
-  const cmd = info
-    ? `claude mcp add --transport http helmsman ${info.url} --header "Authorization: Bearer ${info.token}"`
-    : "";
-
-  async function copy() {
-    await navigator.clipboard.writeText(cmd);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+  async function connectClaudeCode() {
+    setConnecting(true);
+    setConnectMsg(null);
+    try {
+      const r = await api.mcpConnectClaudeCode("kestral");
+      setConnectMsg({ ok: r.ok, text: r.message });
+      refreshRegs();
+    } catch (e) {
+      setConnectMsg({ ok: false, text: errText(e) });
+    } finally {
+      setConnecting(false);
+    }
   }
 
-  // Setzt Befehls- und Datei-Policy aller Hosts auf einmal.
+  async function installSkillFiles() {
+    setInstalling(true);
+    setInstallMsg(null);
+    try {
+      const r = await api.installSkill();
+      setSkillOk(true);
+      setInstallMsg({ ok: true, text: `${r.message}\nRuntime: ${r.runtime}\n${r.skill_path}` });
+    } catch (e) {
+      setInstallMsg({ ok: false, text: errText(e) });
+    } finally {
+      setInstalling(false);
+    }
+  }
+
+  async function removeSkill() {
+    setInstalling(true);
+    setInstallMsg(null);
+    try {
+      const msg = await api.uninstallSkill();
+      setSkillOk(false);
+      setInstallMsg({ ok: true, text: msg });
+    } catch (e) {
+      setInstallMsg({ ok: false, text: errText(e) });
+    } finally {
+      setInstalling(false);
+    }
+  }
+
+  async function refreshRegs() {
+    try {
+      setRegs(await api.mcpListRegistrations());
+    } catch {
+      setRegs([]);
+    }
+  }
+
+  async function removeReg(name: string) {
+    setRegs((cur) => (cur ?? []).filter((r) => r.name !== name));
+    try {
+      await api.mcpRemoveRegistration(name);
+    } finally {
+      refreshRegs();
+    }
+  }
+
+  async function rotateToken() {
+    setRotating(true);
+    setConnectMsg(null);
+    try {
+      const r = await api.mcpRotateToken("kestral");
+      setConnectMsg({ ok: true, text: r.message });
+      refreshRegs();
+    } catch (e) {
+      setConnectMsg({ ok: false, text: errText(e) });
+    } finally {
+      setRotating(false);
+    }
+  }
+
   async function setAll(policy: AiPolicy) {
     await Promise.all(
       hosts.flatMap((h) => [api.hostSetPolicy(h.id, policy), api.hostSetFilePolicy(h.id, policy)]),
@@ -1803,11 +2002,11 @@ function McpView() {
   }
 
   return (
-    <div className="px-6 pt-5 pb-12 max-w-3xl flex flex-col gap-5">
+    <div className="px-6 pt-5 pb-12 flex flex-col gap-5">
       <div>
-        <h2 className="text-lg font-semibold tracking-tight">MCP &amp; AI access</h2>
+        <h2 className="text-lg font-semibold tracking-tight">AI access</h2>
         <p className="text-sm text-muted-foreground">
-          Optional. Lets an AI run commands through Helmsman, with your approval. Off by default.
+          Optional. Lets an AI run commands through Kestral's MCP server, with your approval. Off by default.
         </p>
       </div>
 
@@ -1827,14 +2026,10 @@ function McpView() {
                   : "Turn on to allow AI commands for a limited time."}
               </div>
             </div>
-            <Badge variant={active ? "success" : "secondary"} className="shrink-0">
-              {active ? "ON" : "OFF"}
-            </Badge>
           </div>
-          {/* Sanftes Auf-/Zuklappen ueber grid-rows statt hartem Ein-/Ausblenden. */}
           <div className={"grid transition-[grid-template-rows] duration-200 ease-out " + (active ? "grid-rows-[0fr]" : "grid-rows-[1fr]")}>
             <div className="overflow-hidden">
-              <div className="flex items-center gap-3 border-t pt-4 mt-4">
+              <div className="flex items-center justify-between gap-3 border-t pt-4 mt-4">
                 <span className="text-sm text-muted-foreground">Turn on for</span>
                 <Segmented
                   value={String(aiMinutes)}
@@ -1848,39 +2043,183 @@ function McpView() {
         </CardContent>
       </Card>
 
-      {info && (
+      <Card>
+        <CardHeader>
+          <CardTitle>AI clients</CardTitle>
+          <CardDescription>
+            Two methods for Claude to reach Kestral. Set up both, Claude picks whichever is
+            available.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-5">
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <p className="text-sm font-medium">Skill</p>
+                  <span
+                    className={
+                      "text-xs rounded px-1.5 py-0.5 " +
+                      (skillOk ? "bg-success/15 text-success" : "bg-muted text-muted-foreground")
+                    }
+                  >
+                    {skillOk ? "installed" : "not installed"}
+                  </span>
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  For chats that are already open. A running chat cannot load new tools, so this is
+                  the only thing that reaches it.
+                </p>
+              </div>
+              <div className="flex w-48 shrink-0 justify-end">
+                <Button
+                  size="sm"
+                  className="w-full"
+                  variant={skillOk ? "outline" : "default"}
+                  onClick={skillOk ? removeSkill : installSkillFiles}
+                  disabled={installing}
+                >
+                  {installing && <Spinner className="size-4" />}
+                  {skillOk ? "Remove" : "Install"}
+                </Button>
+              </div>
+            </div>
+            {installMsg && (
+              <p
+                className={
+                  "text-xs whitespace-pre-wrap break-all " +
+                  (installMsg.ok ? "text-muted-foreground" : "text-destructive")
+                }
+              >
+                {installMsg.text}
+              </p>
+            )}
+          </div>
+
+          <div className="border-t pt-4 flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">MCP</p>
+                <p className="text-sm text-muted-foreground">
+                  The better method: real tools with checked arguments. Only chats started after
+                  connecting can see it.
+                </p>
+              </div>
+              <div className="flex w-48 shrink-0 justify-end">
+                {mcpReg && mcpReg.connected ? (
+                  <Button
+                    size="sm"
+                    className="w-full"
+                    variant="outline"
+                    onClick={rotateToken}
+                    disabled={rotating}
+                  >
+                    {rotating && <Spinner className="size-4" />}Rotate token
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    className="w-full"
+                    onClick={connectClaudeCode}
+                    disabled={connecting}
+                  >
+                    {connecting && <Spinner className="size-4" />}
+                    {mcpReg ? "Reconnect" : "Connect"}
+                  </Button>
+                )}
+              </div>
+            </div>
+            {connectMsg && (
+              <p
+                className={
+                  "text-xs whitespace-pre-wrap " +
+                  (connectMsg.ok ? "text-muted-foreground" : "text-destructive")
+                }
+              >
+                {connectMsg.text}
+              </p>
+            )}
+
+            {regs === null ? (
+              <p className="text-xs text-muted-foreground">checking…</p>
+            ) : regs.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                Nothing registered yet. Use “Connect Claude Code” above.
+              </p>
+            ) : (
+              <div className="flex flex-col gap-1">
+                {regs.map((r) => (
+                  <div
+                    key={r.name}
+                    className="flex items-center gap-3 rounded-md border px-3 py-2 text-sm"
+                  >
+                    <span
+                      className={
+                        "size-2 rounded-full shrink-0 " +
+                        (r.connected ? "bg-success" : "bg-destructive")
+                      }
+                      aria-hidden
+                    />
+                    <span className="font-medium truncate">{r.name}</span>
+                    {r.is_this_app && (
+                      <span className="text-xs rounded bg-muted px-1.5 py-0.5 text-muted-foreground shrink-0">
+                        this app
+                      </span>
+                    )}
+                    <span className="text-xs text-muted-foreground truncate flex-1">{r.url}</span>
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      onClick={() => removeReg(r.name)}
+                      aria-label={`Remove ${r.name}`}
+                    >
+                      <Trash2 className="size-4" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <p className="text-xs text-muted-foreground border-t pt-4">
+            Same rules either way: AI access must be on, locked hosts are refused, hosts set to ask
+            need your approval, everything is logged.
+          </p>
+        </CardContent>
+      </Card>
+
+      {caps && (
         <Card>
           <CardHeader>
-            <CardTitle>MCP server</CardTitle>
+            <CardTitle>What the AI may do</CardTitle>
             <CardDescription>
-              Endpoint {info.url}{" "}
-              <span className={info.running ? "text-success" : "text-muted-foreground"}>
-                {info.running ? "(running)" : "(not active yet)"}
-              </span>
+              Separate from the per-host policy below. Turn off listing and the AI cannot enumerate, it
+              only acts on hosts you name explicitly. Managing is off by default.
             </CardDescription>
           </CardHeader>
-          <CardContent className="flex flex-col gap-2">
-            <p className="text-sm">Connect Claude Code with:</p>
-            <div className="relative">
-              <pre className="overflow-x-auto rounded-md bg-muted p-3 pr-11 text-xs whitespace-pre-wrap break-all">{cmd}</pre>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    size="icon-sm"
-                    variant="ghost"
-                    onClick={copy}
-                    aria-label={copied ? "Copied" : "Copy command"}
-                    className="absolute top-2 right-2 bg-background/70 hover:bg-background backdrop-blur-sm"
-                  >
-                    {copied ? (
-                      <Check key="check" className="size-4 text-success animate-in zoom-in-50 duration-150" />
-                    ) : (
-                      <Copy key="copy" className="size-4" />
-                    )}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>{copied ? "Copied" : "Copy"}</TooltipContent>
-              </Tooltip>
+          <CardContent className="flex flex-col gap-5">
+            <SettingRow label="List hosts" hint="Let the AI see all your hosts. Off: you must name a host.">
+              <Switch checked={caps.list_hosts} onCheckedChange={(v) => setCap("list_hosts", v)} aria-label="List hosts" />
+            </SettingRow>
+            <SettingRow label="List scripts" hint="Let the AI read your saved scripts.">
+              <Switch checked={caps.list_snippets} onCheckedChange={(v) => setCap("list_snippets", v)} aria-label="List scripts" />
+            </SettingRow>
+            <SettingRow label="List credentials" hint="Only ids and kinds, never the secret values.">
+              <Switch checked={caps.list_secrets} onCheckedChange={(v) => setCap("list_secrets", v)} aria-label="List credentials" />
+            </SettingRow>
+            <SettingRow label="Read audit log" hint="Let the AI read its own action history.">
+              <Switch checked={caps.audit_log} onCheckedChange={(v) => setCap("audit_log", v)} aria-label="Read audit log" />
+            </SettingRow>
+            <div className="border-t pt-4 flex flex-col gap-4">
+              <SettingRow label="Create and change hosts" hint="Let the AI add or edit hosts. It never sees secret values.">
+                <Switch checked={caps.manage_hosts} onCheckedChange={(v) => setCap("manage_hosts", v)} aria-label="Manage hosts" />
+              </SettingRow>
+              <SettingRow
+              label="Create, change and delete scripts"
+              hint="Let the AI manage your saved scripts. Deleting is included and cannot be undone."
+            >
+                <Switch checked={caps.manage_snippets} onCheckedChange={(v) => setCap("manage_snippets", v)} aria-label="Manage scripts" />
+              </SettingRow>
             </div>
           </CardContent>
         </Card>
@@ -1907,14 +2246,14 @@ function McpView() {
             <p className="text-sm text-muted-foreground">No hosts yet.</p>
           ) : (
             hosts.map((h) => (
-              <div key={h.id} className="flex flex-col gap-2.5 rounded-lg border p-3">
+              <div key={h.id} className="flex items-center justify-between gap-4 rounded-lg border p-3">
                 <div className="min-w-0">
                   <div className="text-sm truncate">{h.name}</div>
                   <div className="text-xs text-muted-foreground truncate">{h.username}@{h.hostname}</div>
                 </div>
-                <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground w-16 shrink-0">Commands</span>
+                <div className="flex flex-col gap-2 shrink-0">
+                  <div className="flex items-center justify-end gap-2">
+                    <span className="text-xs text-muted-foreground">Commands</span>
                     <Segmented
                       value={h.ai_policy}
                       size="sm"
@@ -1925,8 +2264,8 @@ function McpView() {
                       options={POLICIES.map((p) => ({ value: p, label: POLICY_LABEL[p] }))}
                     />
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground w-16 shrink-0">Files</span>
+                  <div className="flex items-center justify-end gap-2">
+                    <span className="text-xs text-muted-foreground">Files</span>
                     <Segmented
                       value={h.ai_file_policy}
                       size="sm"
@@ -1946,8 +2285,6 @@ function McpView() {
     </div>
   );
 }
-
-/* ----------------------------- settings ----------------------------- */
 
 function SettingRow({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
@@ -1977,7 +2314,7 @@ function TermPreview({ theme }: { theme: ITheme }) {
     <div className="rounded-lg border overflow-hidden">
       <div className="p-3 font-mono text-xs leading-relaxed" style={{ background: theme.background, color: theme.foreground }}>
         <div>
-          <span style={{ color: theme.green }}>user@helmsman</span>
+          <span style={{ color: theme.green }}>user@kestral</span>
           <span style={{ color: theme.foreground }}>:</span>
           <span style={{ color: theme.blue }}>~/project</span>
           <span style={{ color: theme.foreground }}>$ ls --color</span>
@@ -2013,6 +2350,8 @@ function SettingsView() {
     setTermColors,
     aiMinutes,
     setAiMinutes,
+    aiAutoEnable,
+    setAiAutoEnable,
     sftpShowHidden,
     setSftpShowHidden,
     sftpAutoRefresh,
@@ -2022,7 +2361,7 @@ function SettingsView() {
   const preview = terminalTheme(termTheme, termColors);
 
   return (
-    <div className="px-6 pt-5 pb-12 max-w-3xl flex flex-col gap-5">
+    <div className="px-6 pt-5 pb-12 flex flex-col gap-5">
       <div>
         <h2 className="text-lg font-semibold tracking-tight">Settings</h2>
         <p className="text-sm text-muted-foreground">Appearance, motion and terminal. Everything is stored locally.</p>
@@ -2034,28 +2373,29 @@ function SettingsView() {
         </CardHeader>
         <CardContent className="flex flex-col gap-5">
           <SettingRow label="Theme" hint="Color mode of the app.">
-            <Segmented<Theme>
-              value={theme}
-              onChange={setTheme}
-              size="sm"
-              options={THEMES.map((t) => ({ value: t, label: t.charAt(0).toUpperCase() + t.slice(1) }))}
-            />
-          </SettingRow>
-          <SettingRow label="Animations" hint="Speed of UI motion. 100% is normal, 0% turns it off.">
-            <div className="flex items-center gap-3" data-no-anim-scale>
-              <input
-                type="range"
-                min={ANIM_MIN}
-                max={ANIM_MAX}
-                step={0.05}
-                value={animScale}
-                onChange={(e) => setAnimScale(Number(e.target.value))}
-                aria-label="Animation speed"
-                className="w-40 accent-primary cursor-pointer"
+            <div className="w-64">
+              <Segmented<Theme>
+                value={theme}
+                onChange={setTheme}
+                size="sm"
+                fluid
+                options={THEMES.map((t) => ({ value: t, label: t.charAt(0).toUpperCase() + t.slice(1) }))}
               />
-              <span className="text-xs text-muted-foreground tabular-nums w-9 text-right">
-                {animScale < 0.05 ? "Off" : `${Math.round(animScale * 100)}%`}
-              </span>
+            </div>
+          </SettingRow>
+          <SettingRow label="Animations" hint="Speed of UI motion.">
+            <div className="w-64">
+              <Segmented
+                value={animScale >= 1.2 ? "slow" : animScale <= 0.8 ? "fast" : "normal"}
+                onChange={(v) => setAnimScale(v === "slow" ? 1.4 : v === "fast" ? 0.6 : 1)}
+                size="sm"
+                fluid
+                options={[
+                  { value: "slow", label: "Slow" },
+                  { value: "normal", label: "Normal" },
+                  { value: "fast", label: "Fast" },
+                ]}
+              />
             </div>
           </SettingRow>
         </CardContent>
@@ -2066,13 +2406,13 @@ function SettingsView() {
           <CardTitle>Terminal</CardTitle>
           <CardDescription>Color scheme of the terminal emulator. Applies to all sessions.</CardDescription>
         </CardHeader>
-        <CardContent className="flex flex-col gap-4">
+        <CardContent className="flex flex-col gap-5">
           <SettingRow label="Colors" hint="Render ANSI colors. Off makes the terminal single-colored.">
             <Switch checked={termColors} onCheckedChange={setTermColors} aria-label="Terminal colors" />
           </SettingRow>
           <SettingRow label="Color scheme" hint="Also tints the terminal frame.">
             <Select value={termTheme} onValueChange={setTermTheme}>
-              <SelectTrigger className="w-48">
+              <SelectTrigger className="w-64">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -2106,24 +2446,133 @@ function SettingsView() {
       <Card>
         <CardHeader>
           <CardTitle>AI access</CardTitle>
-          <CardDescription>Default duration used when you switch AI access on.</CardDescription>
+          <CardDescription>When AI access switches on, and how long it stays on.</CardDescription>
         </CardHeader>
-        <CardContent>
-          <SettingRow label="Default duration" hint="Preset for the auto-off timer.">
-            <Segmented
-              value={String(aiMinutes)}
-              onChange={(v) => setAiMinutes(Number(v))}
-              size="sm"
-              options={DURATIONS.map((d) => ({ value: d.id, label: d.label }))}
+        <CardContent className="flex flex-col gap-5">
+          <SettingRow
+            label="Turn on after unlocking"
+            hint="Enables AI access automatically once you unlock. The auto-off timer still applies."
+          >
+            <Switch
+              checked={aiAutoEnable}
+              onCheckedChange={setAiAutoEnable}
+              aria-label="Enable AI access after unlocking"
             />
+          </SettingRow>
+          <SettingRow label="Default duration" hint="Preset for the auto-off timer.">
+            <div className="w-64">
+              <Segmented
+                value={String(aiMinutes)}
+                onChange={(v) => setAiMinutes(Number(v))}
+                size="sm"
+                fluid
+                options={DURATIONS.map((d) => ({ value: d.id, label: d.label }))}
+              />
+            </div>
           </SettingRow>
         </CardContent>
       </Card>
+
+      <ChangePasswordCard />
     </div>
   );
 }
 
-/* ----------------------------- dialogs ----------------------------- */
+function ChangePasswordCard() {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [ok, setOk] = useState(false);
+
+  const reset = () => {
+    setErr("");
+    setOk(false);
+  };
+  const canSave = !!current && !!next && next === confirm && !busy;
+
+  async function save() {
+    setErr("");
+    setOk(false);
+    if (next !== confirm) {
+      setErr("New passwords do not match.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.vaultChangeMaster(current, next);
+      setOk(true);
+      setCurrent("");
+      setNext("");
+      setConfirm("");
+    } catch (e) {
+      setErr(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Security</CardTitle>
+        <CardDescription>
+          Change the master password. It unlocks the vault and encrypts all local data, including
+          host names and IP addresses.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-5">
+        <div className="flex max-w-sm flex-col gap-4">
+          <LabeledField label="Current password">
+            <Input
+              type="password"
+              value={current}
+              onChange={(e) => {
+                setCurrent(e.target.value);
+                reset();
+              }}
+              placeholder="••••••••"
+              autoComplete="current-password"
+            />
+          </LabeledField>
+          <LabeledField label="New password">
+            <Input
+              type="password"
+              value={next}
+              onChange={(e) => {
+                setNext(e.target.value);
+                reset();
+              }}
+              placeholder="New master password"
+              autoComplete="new-password"
+            />
+          </LabeledField>
+          <LabeledField label="Confirm new password">
+            <Input
+              type="password"
+              value={confirm}
+              onChange={(e) => {
+                setConfirm(e.target.value);
+                reset();
+              }}
+              placeholder="Repeat new password"
+              autoComplete="new-password"
+            />
+          </LabeledField>
+          {err && <p className="text-sm text-destructive">{err}</p>}
+          {ok && <p className="text-sm text-success">Master password changed.</p>}
+        </div>
+
+        <div className="border-t pt-4">
+          <Button onClick={save} disabled={!canSave}>
+            {busy && <Spinner className="size-4" />}Change password
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 function ConfirmDialog({
   title,
@@ -2170,13 +2619,26 @@ function ApprovalModal({
     <AlertDialog open onOpenChange={() => {}}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Approval required</AlertDialogTitle>
-          <AlertDialogDescription>The AI requests the following on {req.host_name}. Review it before allowing.</AlertDialogDescription>
+          <div className="flex items-center gap-3">
+            <div className="size-9 rounded-lg bg-primary/15 text-primary grid place-items-center shrink-0">
+              <Cpu className="size-5" />
+            </div>
+            <div className="min-w-0">
+              <AlertDialogTitle>AI wants to run a command</AlertDialogTitle>
+              <AlertDialogDescription>
+                On <span className="font-medium text-foreground">{req.host_name}</span>. Review it before you allow it.
+              </AlertDialogDescription>
+            </div>
+          </div>
         </AlertDialogHeader>
-        <pre className="overflow-x-auto rounded-md bg-muted p-3 text-sm whitespace-pre-wrap break-all">{req.command}</pre>
+        <pre className="overflow-auto max-h-52 rounded-md bg-muted p-3 text-sm whitespace-pre-wrap break-all" data-selectable>
+          {req.command}
+        </pre>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => onAnswer(req.id, false)}>Deny</AlertDialogCancel>
-          <AlertDialogAction onClick={() => onAnswer(req.id, true)}>Approve</AlertDialogAction>
+          <AlertDialogAction onClick={() => onAnswer(req.id, true)} className="bg-primary">
+            Approve &amp; run
+          </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

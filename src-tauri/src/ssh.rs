@@ -1,8 +1,3 @@
-//! SSH-Ausfuehrung ueber russh.
-//!
-//! Der private Schluessel kommt nur kurz aus dem Tresor, wird in diesem Prozess
-//! geladen und signiert die Authentifizierung intern. Er verlaesst den Kern nie
-//! und wird der KI niemals gezeigt.
 
 use std::sync::Arc;
 
@@ -16,17 +11,14 @@ use crate::error::{AppError, Result};
 use crate::model::{AuthMethod, Host};
 use crate::vault::{SecretStore, Vault};
 
-/// Ergebnis eines Remote-Befehls.
 #[derive(Debug, Clone, Serialize)]
 pub struct CommandOutput {
     pub stdout: String,
     pub stderr: String,
     pub exit_status: Option<i32>,
-    /// Gesetzt, wenn der Befehl durch ein Signal beendet wurde (statt Exitcode).
     pub exit_signal: Option<String>,
 }
 
-/// Handler fuer eine SSH-Sitzung. Haelt host/port fuer die known_hosts-Pruefung.
 pub struct ClientHandler {
     host: String,
     port: u16,
@@ -40,16 +32,7 @@ impl client::Handler for ClientHandler {
         server_public_key: &ssh_key::PublicKey,
     ) -> std::result::Result<bool, Self::Error> {
         match russh::keys::check_known_hosts(&self.host, self.port, server_public_key) {
-            // Bekannt und passt.
             Ok(true) => Ok(true),
-            // Unbekannt: Trust on first use, merken und akzeptieren.
-            // ABER: russh liefert auch fuer eine vorhandene, aber UNLESBARE
-            // known_hosts-Datei Ok(false) (interne File::open-Fehler werden zu
-            // einer leeren Liste verschluckt). Wuerden wir das blind als
-            // "erstmalig" behandeln, liesse sich die Changed-Key-/MITM-Pruefung
-            // durch Sperren der Datei aushebeln. Daher: existiert die Datei, ist
-            // aber nicht lesbar, fail closed. Nur eine echt fehlende Datei loest
-            // TOFU aus.
             Ok(false) => {
                 if let Some(path) = known_hosts_path() {
                     if path.exists() {
@@ -66,15 +49,10 @@ impl client::Handler for ClientHandler {
                 }
                 Ok(true)
             }
-            // Host bekannt, aber Key geaendert: hart ablehnen (moeglicher MITM).
             Err(russh::keys::Error::KeyChanged { line }) => {
                 tracing::error!("Host-Key geaendert (known_hosts Zeile {line}), abgelehnt");
                 Ok(false)
             }
-            // Pruefung fehlgeschlagen (korrupte known_hosts-Zeile, IO-/Rechtefehler,
-            // kein Home-Verzeichnis). Fail closed: ablehnen statt blind vertrauen,
-            // sonst liesse sich die Changed-Key-Pruefung umgehen. Eine FEHLENDE Datei
-            // liefert bereits Ok(false) (TOFU-Zweig oben), nicht Err.
             Err(e) => {
                 tracing::error!("known_hosts pruefen fehlgeschlagen: {e}, Verbindung abgelehnt");
                 Ok(false)
@@ -83,7 +61,6 @@ impl client::Handler for ClientHandler {
     }
 }
 
-/// Baut SSH-Verbindungen auf und fuehrt Befehle aus.
 pub struct SshManager {}
 
 impl SshManager {
@@ -91,8 +68,6 @@ impl SshManager {
         Self {}
     }
 
-    /// Baut eine Verbindung auf und authentifiziert sie. Gibt die offene Session
-    /// zurueck. Wird vom Terminal (interaktive Shell) und von run_command geteilt.
     pub async fn connect(
         &self,
         host: &Host,
@@ -101,8 +76,6 @@ impl SshManager {
         self.connect_progress(host, vault, |_| {}).await
     }
 
-    /// Wie `connect`, meldet aber jede Phase (connecting, authenticating) ueber
-    /// `on_stage`, damit das UI wie bei Termius zeigen kann, wo es gerade haengt.
     pub async fn connect_progress(
         &self,
         host: &Host,
@@ -147,12 +120,28 @@ impl SshManager {
         vault: &Arc<Vault>,
         command: &str,
     ) -> Result<CommandOutput> {
+        self.run_command_opts(host, vault, command, false).await
+    }
+
+    pub async fn run_command_opts(
+        &self,
+        host: &Host,
+        vault: &Arc<Vault>,
+        command: &str,
+        pty: bool,
+    ) -> Result<CommandOutput> {
         let session = self.connect(host, vault).await?;
 
         let mut channel = session
             .channel_open_session()
             .await
             .map_err(|e| AppError::Ssh(format!("Kanal: {e}")))?;
+        if pty {
+            channel
+                .request_pty(true, "xterm-256color", 120, 34, 0, 0, &[])
+                .await
+                .map_err(|e| AppError::Ssh(format!("PTY: {e}")))?;
+        }
         channel
             .exec(true, command)
             .await
@@ -213,8 +202,6 @@ impl SshManager {
         match &host.auth {
             AuthMethod::Password { secret_id } => {
                 let bytes = vault.get_secret(secret_id)?;
-                // Klartext-Passwort in einem zeroizing-String halten (wird beim Drop
-                // genullt). russh kopiert es intern leider in einen eigenen String.
                 let password = zeroize::Zeroizing::new(
                     std::str::from_utf8(&bytes)
                         .map_err(|_| AppError::Ssh("Passwort ist kein gueltiges UTF-8".into()))?
@@ -257,7 +244,6 @@ impl Default for SshManager {
     }
 }
 
-/// Pfad zur known_hosts-Datei (USERPROFILE/HOME + .ssh/known_hosts).
 fn known_hosts_path() -> Option<std::path::PathBuf> {
     std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
@@ -265,7 +251,6 @@ fn known_hosts_path() -> Option<std::path::PathBuf> {
         .map(|home| home.join(".ssh").join("known_hosts"))
 }
 
-/// Haengt einen Host-Key an die known_hosts-Datei an (Trust on first use).
 fn append_known_host(host: &str, port: u16, key: &ssh_key::PublicKey) -> std::io::Result<()> {
     use std::io::Write;
 

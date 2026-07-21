@@ -1,9 +1,11 @@
 [package]
-name = "helmsman"
+name = "kestral"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "SSH client with an encrypted vault and a built-in MCP server for controlled AI access"
+authors = ["Anton Schmid-Koenig <anton@schmid-koenig.de>"]
 edition = "2021"
+license = "PolyForm-Noncommercial-1.0.0"
+repository = "https://github.com/antndev/Kestral"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -11,7 +13,7 @@ edition = "2021"
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "helmsman_lib"
+name = "kestral_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -25,6 +27,8 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-dialog = "2"
 # Natives Clipboard (kein Browser-Berechtigungs-Popup im Webview)
 tauri-plugin-clipboard-manager = "2"
+# Datei aus dem SFTP-Browser per Drag&Drop in den Windows Explorer ziehen
+tauri-plugin-drag = "2"
 
 # Eingebauter MCP-Server (Streamable HTTP auf Loopback) fuer kontrollierten KI-Zugriff
 rmcp = { version = "1.8", features = ["server", "macros", "schemars", "transport-streamable-http-server"] }

@@ -14,7 +14,6 @@ use crate::snippets::SnippetStore;
 use crate::ssh::{CommandOutput, SshManager};
 use crate::vault::Vault;
 
-/// Verbindungsdaten des lokalen MCP-Endpunkts fuer die Anzeige im UI.
 #[derive(Debug, Clone, Serialize)]
 pub struct McpInfo {
     pub url: String,
@@ -22,8 +21,6 @@ pub struct McpInfo {
     pub running: bool,
 }
 
-/// Gebuendelte Kern-Dienste. Wird sowohl vom UI (ueber `AppState`) als auch vom
-/// MCP-Server genutzt. Alle Felder sind `Arc`, also billig klonbar.
 #[derive(Clone)]
 pub struct Services {
     pub vault: Arc<Vault>,
@@ -36,8 +33,6 @@ pub struct Services {
 }
 
 impl Services {
-    /// Der zentrale Ablauf fuer jede KI-Aktion: Gate pruefen, ggf. Freigabe
-    /// einholen, ausfuehren, protokollieren. Gibt niemals Geheimnisse zurueck.
     pub async fn ai_run_command(&self, host_id: Uuid, command: &str) -> Result<CommandOutput> {
         let host = self.hosts.get(host_id)?;
         let host_id_s = host.id.to_string();
@@ -64,9 +59,6 @@ impl Services {
                     );
                     return Err(AppError::ApprovalDenied);
                 }
-                // Nach der (bis zu 2 Min) Freigabe-Wartezeit erneut pruefen: der
-                // Auto-Aus-Timer koennte abgelaufen oder der Host inzwischen
-                // gesperrt sein. Sonst liefe der Befehl ausserhalb des Fensters.
                 let host = self.hosts.get(host_id)?;
                 match self.policy.gate(host.ai_policy) {
                     Gate::Denied(reason) => {
@@ -133,10 +125,6 @@ impl Services {
         result
     }
 
-    // --- KI-Dateizugriff (SFTP), eigene Policy je Host ---
-
-    /// Prueft die Datei-Policy des Hosts, holt ggf. die Freigabe ein und gibt den
-    /// (nach der Freigabe erneut geladenen) Host plus die Entscheidung zurueck.
     async fn authorize_file(&self, host_id: Uuid, action: &str) -> Result<(Host, &'static str)> {
         let host = self.hosts.get(host_id)?;
         let hid = host.id.to_string();
@@ -253,10 +241,10 @@ fn reason_to_err(reason: DeniedReason) -> AppError {
     }
 }
 
-/// Von Tauri verwalteter Zustand. Per Typ adressiert.
 pub struct AppState {
     pub services: Services,
     pub mcp: Mutex<McpInfo>,
-    /// Stoppt den MCP-Server beim Beenden der App sauber.
     pub mcp_cancel: tokio_util::sync::CancellationToken,
+    pub mcp_bearer: crate::mcp::Bearer,
+    pub mcp_token_path: std::path::PathBuf,
 }

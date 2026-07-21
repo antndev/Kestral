@@ -1,14 +1,3 @@
-//! Verschluesselter lokaler Schluesselspeicher.
-//!
-//! Aufbau: Eine Datei wird als Ganzes verschluesselt. Das Master-Passwort geht
-//! durch Argon2id zu einem 32-Byte-Schluessel, damit wird der Inhalt mit
-//! XChaCha20Poly1305 verschluesselt. Der Klartext-Header (Version, KDF-Parameter,
-//! Salt, Nonce) wird als Associated Data in den Auth-Tag gebunden, damit niemand
-//! die Parameter unbemerkt herabsetzen kann.
-//!
-//! Der ganze Zugriff laeuft hinter dem Trait [`SecretStore`], damit wir den
-//! lokalen Tresor spaeter gegen Vaultwarden tauschen koennen, ohne die Aufrufer
-//! anzufassen.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -24,15 +13,22 @@ use zeroize::Zeroizing;
 
 use crate::error::{AppError, Result};
 
-// Argon2id-Parameter. Balance aus Sicherheit und schnellem Desktop-Entsperren.
-// Aeltere Tresore mit anderen Parametern werden beim naechsten Entsperren
-// automatisch auf diese Werte hochgezogen (siehe unlock()).
-const KDF_M_COST: u32 = 65_536; // 64 MiB
+const KDF_M_COST: u32 = 65_536;
 const KDF_T_COST: u32 = 2;
 const KDF_P_COST: u32 = 1;
 const VAULT_VERSION: u8 = 1;
 
-/// Art eines abgelegten Geheimnisses.
+const ENVELOPE_AAD: &[u8] = b"kestral-metadata-v1";
+
+const DEK_ID: &str = "__kestral_dek__";
+
+const HOSTS_ID: &str = "__kestral_hosts__";
+const SNIPPETS_ID: &str = "__kestral_snippets__";
+
+fn is_reserved(id: &str) -> bool {
+    id == DEK_ID || id == HOSTS_ID || id == SNIPPETS_ID
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SecretKind {
@@ -40,7 +36,6 @@ pub enum SecretKind {
     PrivateKey,
 }
 
-/// Oeffentliche Beschreibung eines Eintrags (ohne den geheimen Wert).
 #[derive(Debug, Clone, Serialize)]
 pub struct SecretMeta {
     pub id: String,
@@ -59,14 +54,21 @@ struct Header {
     m_cost: u32,
     t_cost: u32,
     p_cost: u32,
-    salt: String,  // base64
-    nonce: String, // base64
+    salt: String,
+    nonce: String,
 }
 
 #[derive(Serialize, Deserialize)]
 struct VaultFile {
     header: Header,
-    ciphertext: String, // base64
+    ciphertext: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Envelope {
+    enc: u8,
+    nonce: String,
+    ciphertext: String,
 }
 
 struct Unlocked {
@@ -75,7 +77,6 @@ struct Unlocked {
     data: BTreeMap<String, Record>,
 }
 
-/// Gemeinsame Schnittstelle fuer jeden Geheimnis-Speicher (lokal oder spaeter Vaultwarden).
 pub trait SecretStore: Send + Sync {
     fn is_unlocked(&self) -> bool;
     fn exists(&self) -> bool;
@@ -88,7 +89,6 @@ pub trait SecretStore: Send + Sync {
     fn list_secrets(&self) -> Result<Vec<SecretMeta>>;
 }
 
-/// Dateibasierter lokaler Tresor.
 pub struct Vault {
     path: PathBuf,
     state: Mutex<Option<Unlocked>>,
@@ -117,8 +117,6 @@ impl Vault {
         Ok(key)
     }
 
-    /// Verschluesselt die aktuelle Datenmenge und schreibt die Tresordatei neu
-    /// (jedes Mal mit frischer Nonce).
     fn persist(&self, unlocked: &Unlocked) -> Result<()> {
         let plaintext = serde_json::to_vec(&unlocked.data)?;
 
@@ -152,44 +150,15 @@ impl Vault {
             ciphertext: b64().encode(ciphertext),
         };
         let bytes = serde_json::to_vec_pretty(&file)?;
-        // Atomar schreiben, damit ein Absturz mitten im Schreiben den Tresor
-        // nicht leert oder halb beschreibt (sonst sind alle Geheimnisse weg).
         crate::util::atomic_write(&self.path, &bytes)?;
         Ok(())
     }
-}
 
-impl SecretStore for Vault {
-    fn is_unlocked(&self) -> bool {
-        self.state.lock().unwrap().is_some()
-    }
-
-    fn exists(&self) -> bool {
-        self.path.exists()
-    }
-
-    fn create(&self, master: &str) -> Result<()> {
-        if self.exists() {
-            return Err(AppError::VaultExists);
-        }
-        let mut salt = [0u8; 16];
-        OsRng.fill_bytes(&mut salt);
-        let key = Vault::derive_key(master, &salt)?;
-        let unlocked = Unlocked {
-            key,
-            salt,
-            data: BTreeMap::new(),
-        };
-        self.persist(&unlocked)?;
-        *self.state.lock().unwrap() = Some(unlocked);
-        Ok(())
-    }
-
-    fn unlock(&self, master: &str) -> Result<()> {
-        if !self.exists() {
-            return Err(AppError::VaultMissing);
-        }
-        let raw = std::fs::read(&self.path)?;
+    fn decrypt_file(
+        path: &std::path::Path,
+        master: &str,
+    ) -> Result<(Zeroizing<[u8; 32]>, [u8; 16], BTreeMap<String, Record>, bool)> {
+        let raw = std::fs::read(path)?;
         let file: VaultFile = serde_json::from_slice(&raw)?;
 
         let salt_vec = b64().decode(&file.header.salt).map_err(|_| AppError::Crypto)?;
@@ -220,7 +189,6 @@ impl SecretStore for Vault {
             .hash_password_into(master.as_bytes(), &salt, key.as_mut_slice())
             .map_err(|_| AppError::Crypto)?;
 
-        // Der Header (inkl. KDF-Parameter) ist als AAD gebunden.
         let aad = serde_json::to_vec(&file.header)?;
         let cipher =
             XChaCha20Poly1305::new_from_slice(key.as_slice()).map_err(|_| AppError::Crypto)?;
@@ -233,21 +201,216 @@ impl SecretStore for Vault {
                 },
             )
             .map_err(|_| AppError::VaultAuth)?;
-
         let data: BTreeMap<String, Record> = serde_json::from_slice(&plaintext)?;
 
-        let mut unlocked = Unlocked { key, salt, data };
-
-        // Aelteren Tresor transparent auf die aktuellen KDF-Parameter hochziehen,
-        // damit das naechste Entsperren schnell ist.
         let outdated = file.header.m_cost != KDF_M_COST
             || file.header.t_cost != KDF_T_COST
             || file.header.p_cost != KDF_P_COST;
+        Ok((key, salt, data, outdated))
+    }
+
+    pub fn import_missing_from(
+        &self,
+        other_path: &std::path::Path,
+        master: &str,
+    ) -> Result<Vec<String>> {
+        let (_key, _salt, other_data, _outdated) = Self::decrypt_file(other_path, master)?;
+        let mut guard = self.state.lock().unwrap();
+        let unlocked = guard.as_mut().ok_or(AppError::VaultLocked)?;
+        let mut imported = Vec::new();
+        for (id, rec) in other_data {
+            if is_reserved(&id) {
+                continue;
+            }
+            if !unlocked.data.contains_key(&id) {
+                unlocked.data.insert(id.clone(), rec);
+                imported.push(id);
+            }
+        }
+        if !imported.is_empty() {
+            self.persist(unlocked)?;
+        }
+        Ok(imported)
+    }
+
+    pub fn change_master(&self, current: &str, new: &str) -> Result<()> {
+        let mut guard = self.state.lock().unwrap();
+        let unlocked = guard.as_mut().ok_or(AppError::VaultLocked)?;
+
+        let check = Vault::derive_key(current, &unlocked.salt)?;
+        if check.as_slice() != unlocked.key.as_slice() {
+            return Err(AppError::VaultAuth);
+        }
+
+        let mut new_salt = [0u8; 16];
+        OsRng.fill_bytes(&mut new_salt);
+        unlocked.key = Vault::derive_key(new, &new_salt)?;
+        unlocked.salt = new_salt;
+        self.persist(unlocked)?;
+        Ok(())
+    }
+
+    fn ensure_dek(unlocked: &mut Unlocked) -> bool {
+        if unlocked.data.contains_key(DEK_ID) {
+            return false;
+        }
+        let mut dek = [0u8; 32];
+        OsRng.fill_bytes(&mut dek);
+        unlocked.data.insert(
+            DEK_ID.to_string(),
+            Record {
+                kind: SecretKind::Password,
+                value: dek.to_vec(),
+            },
+        );
+        true
+    }
+
+    fn dek_of(unlocked: &Unlocked) -> Option<Zeroizing<[u8; 32]>> {
+        let rec = unlocked.data.get(DEK_ID)?;
+        if rec.value.len() != 32 {
+            return None;
+        }
+        let mut k = Zeroizing::new([0u8; 32]);
+        k.copy_from_slice(&rec.value);
+        Some(k)
+    }
+
+    pub const fn hosts_blob_id() -> &'static str {
+        HOSTS_ID
+    }
+
+    pub const fn snippets_blob_id() -> &'static str {
+        SNIPPETS_ID
+    }
+
+    pub fn get_blob(&self, id: &str) -> Result<Option<Zeroizing<Vec<u8>>>> {
+        let guard = self.state.lock().unwrap();
+        let unlocked = guard.as_ref().ok_or(AppError::VaultLocked)?;
+        Ok(unlocked
+            .data
+            .get(id)
+            .map(|rec| Zeroizing::new(rec.value.clone())))
+    }
+
+    pub fn put_blob(&self, id: &str, bytes: &[u8]) -> Result<()> {
+        let mut guard = self.state.lock().unwrap();
+        let unlocked = guard.as_mut().ok_or(AppError::VaultLocked)?;
+        unlocked.data.insert(
+            id.to_string(),
+            Record {
+                kind: SecretKind::Password,
+                value: bytes.to_vec(),
+            },
+        );
+        self.persist(unlocked)
+    }
+
+    pub fn seal_envelope(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
+        let guard = self.state.lock().unwrap();
+        let unlocked = guard.as_ref().ok_or(AppError::VaultLocked)?;
+        let dek = Self::dek_of(unlocked).ok_or(AppError::Crypto)?;
+
+        let mut nonce_bytes = [0u8; 24];
+        OsRng.fill_bytes(&mut nonce_bytes);
+        let cipher =
+            XChaCha20Poly1305::new_from_slice(dek.as_slice()).map_err(|_| AppError::Crypto)?;
+        let ciphertext = cipher
+            .encrypt(
+                XNonce::from_slice(&nonce_bytes),
+                Payload {
+                    msg: plaintext,
+                    aad: ENVELOPE_AAD,
+                },
+            )
+            .map_err(|_| AppError::Crypto)?;
+
+        let env = Envelope {
+            enc: 1,
+            nonce: b64().encode(nonce_bytes),
+            ciphertext: b64().encode(ciphertext),
+        };
+        Ok(serde_json::to_vec_pretty(&env)?)
+    }
+
+    pub fn open_envelope(&self, data: &[u8]) -> Result<(Zeroizing<Vec<u8>>, bool)> {
+        let guard = self.state.lock().unwrap();
+        let unlocked = guard.as_ref().ok_or(AppError::VaultLocked)?;
+
+        let env: Envelope = serde_json::from_slice(data)?;
+        let nonce = b64().decode(&env.nonce).map_err(|_| AppError::Crypto)?;
+        let ct = b64().decode(&env.ciphertext).map_err(|_| AppError::Crypto)?;
+        if nonce.len() != 24 {
+            return Err(AppError::Crypto);
+        }
+
+        let try_key = |key: &[u8]| -> Option<Vec<u8>> {
+            let cipher = XChaCha20Poly1305::new_from_slice(key).ok()?;
+            cipher
+                .decrypt(
+                    XNonce::from_slice(&nonce),
+                    Payload {
+                        msg: &ct,
+                        aad: ENVELOPE_AAD,
+                    },
+                )
+                .ok()
+        };
+
+        if let Some(dek) = Self::dek_of(unlocked) {
+            if let Some(plain) = try_key(dek.as_slice()) {
+                return Ok((Zeroizing::new(plain), false));
+            }
+        }
+        match try_key(unlocked.key.as_slice()) {
+            Some(plain) => Ok((Zeroizing::new(plain), true)),
+            None => Err(AppError::VaultAuth),
+        }
+    }
+}
+
+impl SecretStore for Vault {
+    fn is_unlocked(&self) -> bool {
+        self.state.lock().unwrap().is_some()
+    }
+
+    fn exists(&self) -> bool {
+        self.path.exists()
+    }
+
+    fn create(&self, master: &str) -> Result<()> {
+        if self.exists() {
+            return Err(AppError::VaultExists);
+        }
+        let mut salt = [0u8; 16];
+        OsRng.fill_bytes(&mut salt);
+        let key = Vault::derive_key(master, &salt)?;
+        let mut unlocked = Unlocked {
+            key,
+            salt,
+            data: BTreeMap::new(),
+        };
+        Self::ensure_dek(&mut unlocked);
+        self.persist(&unlocked)?;
+        *self.state.lock().unwrap() = Some(unlocked);
+        Ok(())
+    }
+
+    fn unlock(&self, master: &str) -> Result<()> {
+        if !self.exists() {
+            return Err(AppError::VaultMissing);
+        }
+        let (key, salt, data, outdated) = Vault::decrypt_file(&self.path, master)?;
+        let mut unlocked = Unlocked { key, salt, data };
+        let fresh_dek = Self::ensure_dek(&mut unlocked);
+
         if outdated {
             let mut new_salt = [0u8; 16];
             OsRng.fill_bytes(&mut new_salt);
             unlocked.key = Vault::derive_key(master, &new_salt)?;
             unlocked.salt = new_salt;
+            self.persist(&unlocked)?;
+        } else if fresh_dek {
             self.persist(&unlocked)?;
         }
 
@@ -295,6 +458,7 @@ impl SecretStore for Vault {
         Ok(unlocked
             .data
             .iter()
+            .filter(|(id, _)| !is_reserved(id))
             .map(|(id, rec)| SecretMeta {
                 id: id.clone(),
                 kind: rec.kind,
@@ -307,16 +471,12 @@ fn b64() -> base64::engine::general_purpose::GeneralPurpose {
     base64::engine::general_purpose::STANDARD
 }
 
-/// Zufaelliges Token fuer die Absicherung des lokalen MCP-Endpunkts.
 pub fn random_token() -> String {
     let mut bytes = [0u8; 24];
     OsRng.fill_bytes(&mut bytes);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
-/// Laedt das stabile MCP-Token aus der Datei oder erzeugt und speichert es.
-/// Stabil ueber Neustarts, damit die einmalige `claude mcp add`-Registrierung
-/// gueltig bleibt. Es ist ein Loopback-Bearer, kein Tresor-Geheimnis.
 pub fn load_or_create_token(path: &std::path::Path) -> String {
     if let Ok(existing) = std::fs::read_to_string(path) {
         let trimmed = existing.trim();
@@ -333,4 +493,120 @@ pub fn load_or_create_token(path: &std::path::Path) -> String {
         );
     }
     token
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp_vault_path(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("kestral_test_{tag}_{}.json", random_token()))
+    }
+
+    #[test]
+    fn unlock_roundtrip_and_import_merges_without_overwrite() {
+        let master = "correct horse battery";
+
+        let path_b = tmp_vault_path("b");
+        let vb = Vault::new(path_b.clone());
+        vb.create(master).unwrap();
+        vb.put_secret("shared", SecretKind::Password, b"from_b").unwrap();
+        vb.put_secret("only_b", SecretKind::PrivateKey, b"key_b").unwrap();
+
+        let path_a = tmp_vault_path("a");
+        let va = Vault::new(path_a.clone());
+        va.create(master).unwrap();
+        va.put_secret("shared", SecretKind::Password, b"from_a").unwrap();
+        va.put_secret("only_a", SecretKind::Password, b"val_a").unwrap();
+
+        va.lock();
+        assert!(!va.is_unlocked());
+        va.unlock(master).unwrap();
+        assert_eq!(va.get_secret("only_a").unwrap().to_vec(), b"val_a".to_vec());
+
+        let mut imported = va.import_missing_from(&path_b, master).unwrap();
+        imported.sort();
+        assert_eq!(imported, vec!["only_b".to_string()]);
+        assert_eq!(va.get_secret("only_b").unwrap().to_vec(), b"key_b".to_vec());
+        assert_eq!(va.get_secret("shared").unwrap().to_vec(), b"from_a".to_vec());
+
+        va.lock();
+        va.unlock(master).unwrap();
+        assert_eq!(va.get_secret("only_b").unwrap().to_vec(), b"key_b".to_vec());
+
+        assert!(va.import_missing_from(&path_b, "wrong").is_err());
+
+        let _ = std::fs::remove_file(&path_a);
+        let _ = std::fs::remove_file(&path_b);
+    }
+
+    #[test]
+    fn seal_open_roundtrip_requires_unlock() {
+        let master = "pw-seal";
+        let path = tmp_vault_path("seal");
+        let v = Vault::new(path.clone());
+        v.create(master).unwrap();
+
+        let msg = br#"[{"name":"opnsense","ip":"10.0.0.1"}]"#;
+        let env = v.seal_envelope(msg).unwrap();
+        assert_eq!(
+            env.iter().find(|b| !b.is_ascii_whitespace()).copied(),
+            Some(b'{')
+        );
+        let (plain, legacy) = v.open_envelope(&env).unwrap();
+        assert_eq!(plain.to_vec(), msg.to_vec());
+        assert!(!legacy, "frisch versiegelt haengt am Datenschluessel");
+
+        v.lock();
+        assert!(v.seal_envelope(msg).is_err());
+        assert!(v.open_envelope(&env).is_err());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn envelope_survives_password_change() {
+        let path = tmp_vault_path("dek");
+        let v = Vault::new(path.clone());
+        v.create("erstes-pw").unwrap();
+
+        let msg = br#"[{"name":"homelab","hostname":"10.0.0.5"}]"#;
+        let env = v.seal_envelope(msg).unwrap();
+
+        v.change_master("erstes-pw", "zweites-pw").unwrap();
+        let (plain, _) = v.open_envelope(&env).unwrap();
+        assert_eq!(plain.to_vec(), msg.to_vec(), "direkt nach dem Wechsel lesbar");
+
+        v.lock();
+        v.unlock("zweites-pw").unwrap();
+        let (plain, _) = v.open_envelope(&env).unwrap();
+        assert_eq!(plain.to_vec(), msg.to_vec(), "nach Neustart weiterhin lesbar");
+
+        let env2 = v.seal_envelope(b"zweiter inhalt").unwrap();
+        assert_eq!(v.open_envelope(&env2).unwrap().0.to_vec(), b"zweiter inhalt".to_vec());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn change_master_switches_password_and_keeps_data() {
+        let old = "old-pw";
+        let new = "new-pw";
+        let path = tmp_vault_path("chg");
+        let v = Vault::new(path.clone());
+        v.create(old).unwrap();
+        v.put_secret("k", SecretKind::Password, b"val").unwrap();
+
+        assert!(v.change_master("wrong", new).is_err());
+
+        v.change_master(old, new).unwrap();
+        assert_eq!(v.get_secret("k").unwrap().to_vec(), b"val".to_vec());
+
+        v.lock();
+        assert!(v.unlock(old).is_err());
+        v.unlock(new).unwrap();
+        assert_eq!(v.get_secret("k").unwrap().to_vec(), b"val".to_vec());
+
+        let _ = std::fs::remove_file(&path);
+    }
 }

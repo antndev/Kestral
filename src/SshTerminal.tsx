@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { readText as clipReadText, writeText as clipWriteText } from "@tauri-apps/plugin-clipboard-manager";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { Check, CircleAlert, PlugZap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -10,7 +11,6 @@ import { terminalTheme } from "./lib/terminal-themes";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
 type Stage = "connecting" | "authenticating" | "opening-shell" | "connected" | "error" | "closed";
@@ -28,22 +28,14 @@ const STAGE_TEXT: Record<Stage, string> = {
   closed: "Disconnected",
 };
 
-// Heuristik: sieht die letzte Ausgabezeile nach einem Passwort-Prompt aus?
-// Solche Eingaben werden NICHT protokolliert (kein Echo -> Geheimnis).
-// Der Doppelpunkt am Ende ist Pflicht, damit nicht jede Zeile, die zufaellig
-// "password" o.ae. erwaehnt, echte Befehle verschluckt.
 const PW_PROMPT = /(password|passphrase|passcode|verification code)[^\n]{0,40}:\s*$/i;
-// CSI/Farbcodes vor dem Test entfernen.
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
 
-/** Echter Terminal-Emulator (xterm), an eine interaktive SSH-PTY-Shell im Kern gekoppelt. */
 export function SshTerminal({ hostId }: { hostId: string }) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<Status>({ stage: "connecting", detail: "" });
   const [gen, setGen] = useState(0);
 
-  // Aktuelles Farbschema. Per Ref gelesen, damit ein Schemawechsel das Terminal
-  // nicht neu aufbaut (das wuerde die Verbindung trennen). Live-Update unten.
   const { termTheme, termColors } = usePrefs();
   const termThemeRef = useRef(termTheme);
   termThemeRef.current = termTheme;
@@ -67,25 +59,18 @@ export function SshTerminal({ hostId }: { hostId: string }) {
     termRef.current = term;
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon());
+    term.loadAddon(
+      new WebLinksAddon((event, uri) => {
+        if (event.ctrlKey || event.metaKey) void openUrl(uri);
+      }),
+    );
     term.open(el);
-    // WebGL-Renderer fuer korrektes, schnelles Rendern (inkl. ANSI-Farben).
-    // Faellt bei fehlendem WebGL-Kontext still auf den Standard-Renderer zurueck.
-    try {
-      term.loadAddon(new WebglAddon());
-    } catch {
-      /* ignore */
-    }
 
-    // Copy/Paste ueber Tauris natives Clipboard (kein Browser-Popup). Einfuegen
-    // geht ueber term.paste(): respektiert Bracketed Paste, fuehrt also nicht
-    // automatisch aus.
     const paste = async () => {
       try {
         const txt = await clipReadText();
         if (!disposed && txt) term.paste(txt);
       } catch {
-        /* ignore */
       }
     };
     term.attachCustomKeyEventHandler((e) => {
@@ -97,6 +82,7 @@ export function SshTerminal({ hostId }: { hostId: string }) {
         return false;
       }
       if (e.ctrlKey && e.shiftKey && k === "v") {
+        e.preventDefault();
         void paste();
         return false;
       }
@@ -105,11 +91,12 @@ export function SshTerminal({ hostId }: { hostId: string }) {
         if (sel) {
           clipWriteText(sel).catch(() => {});
           term.clearSelection();
-          return false; // bei Auswahl kopieren statt SIGINT
+          return false;
         }
-        return true; // sonst Ctrl+C als SIGINT durchlassen
+        return true;
       }
       if (e.ctrlKey && !e.shiftKey && k === "v") {
+        e.preventDefault();
         void paste();
         return false;
       }
@@ -121,8 +108,6 @@ export function SshTerminal({ hostId }: { hostId: string }) {
     };
     el.addEventListener("contextmenu", onContextMenu);
 
-    // Kern -> Bildschirm: rohe PTY-Bytes kommen als ArrayBuffer (InvokeResponseBody::Raw).
-    // Nebenbei einen kurzen Ausgabe-Schwanz fuer die Passwort-Prompt-Erkennung halten.
     const decoder = new TextDecoder();
     let outTail = "";
     const onOutput = new Channel<ArrayBuffer>();
@@ -133,13 +118,9 @@ export function SshTerminal({ hostId }: { hostId: string }) {
       try {
         outTail = (outTail + decoder.decode(bytes, { stream: true })).slice(-400);
       } catch {
-        /* ignore */
       }
     };
 
-    // Tastatureingaben -> Kern. Zusaetzlich best effort die eingegebenen Zeilen
-    // zu Befehlen zusammensetzen und ins Protokoll schreiben. Passwort-Prompts
-    // (kein Echo) werden uebersprungen, damit keine Geheimnisse ins Log geraten.
     let lineBuf = "";
     let lineSecret = false;
     const feed = (text: string) => {
@@ -167,7 +148,6 @@ export function SshTerminal({ hostId }: { hostId: string }) {
     const dataSub = term.onData((data) => {
       void invoke("ssh_write", { id: sessionId, data });
       if (data.startsWith("\x1b")) {
-        // Bracketed Paste entpacken (\x1b[200~ … \x1b[201~), sonst Sequenz ignorieren.
         const m = data.match(/\x1b\[200~([\s\S]*?)\x1b\[201~/);
         if (m) feed(m[1]);
         return;
@@ -175,13 +155,11 @@ export function SshTerminal({ hostId }: { hostId: string }) {
       feed(data);
     });
 
-    // Statusmeldungen aus dem Kern (connecting/authenticating/opening-shell/connected/error).
     const statusSub = listen<{ id: string; stage: Stage; detail: string }>("session-status", (e) => {
       if (!disposed && e.payload.id === sessionId) {
         setStatus({ stage: e.payload.stage, detail: e.payload.detail });
       }
     });
-    // Gegenstelle hat die Sitzung beendet.
     const closeSub = listen<string>("session-closed", (e) => {
       if (!disposed && e.payload === sessionId) {
         term.write("\r\n\x1b[33m[Verbindung getrennt]\x1b[0m\r\n");
@@ -189,12 +167,10 @@ export function SshTerminal({ hostId }: { hostId: string }) {
       }
     });
 
-    // Shell oeffnen, sobald das Layout steht (fit braucht echte Hoehe).
     requestAnimationFrame(() => {
       try {
         fit.fit();
       } catch {
-        /* ignore */
       }
       if (disposed) return;
       void invoke("ssh_open_shell", {
@@ -212,7 +188,6 @@ export function SshTerminal({ hostId }: { hostId: string }) {
         });
     });
 
-    // Groessenaenderung -> fit -> Backend informieren.
     let raf = 0;
     const ro = new ResizeObserver(() => {
       cancelAnimationFrame(raf);
@@ -220,7 +195,6 @@ export function SshTerminal({ hostId }: { hostId: string }) {
         try {
           fit.fit();
         } catch {
-          /* ignore */
         }
         void invoke("ssh_resize", { id: sessionId, cols: term.cols, rows: term.rows });
       });
@@ -241,7 +215,6 @@ export function SshTerminal({ hostId }: { hostId: string }) {
     };
   }, [hostId, gen]);
 
-  // Farbschema und Farb-an/aus live umschalten, ohne die Sitzung neu aufzubauen.
   useEffect(() => {
     const t = termRef.current;
     if (t) {

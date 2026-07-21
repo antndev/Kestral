@@ -42,27 +42,11 @@
   background: transparent;
 }
 
-/* Terminal-Scrollbar: neutral und abgerundet, blendet sich aus wenn kein
+/* Terminal-Scrollbar nutzt denselben dezenten Stil wie der Rest der App
+   (globale Regel oben). overflow auto, damit sie sich ausblendet wenn kein
    Scrollback da ist (z.B. nach clear). */
 .xterm .xterm-viewport {
-  scrollbar-width: thin;
   overflow-y: auto !important;
-}
-.xterm .xterm-viewport::-webkit-scrollbar {
-  width: 10px;
-}
-.xterm .xterm-viewport::-webkit-scrollbar-track {
-  background: transparent;
-}
-.xterm .xterm-viewport::-webkit-scrollbar-thumb {
-  background-color: rgba(140, 140, 140, 0.45);
-  border-radius: 9999px;
-  border: 3px solid transparent;
-  background-clip: padding-box;
-}
-.xterm .xterm-viewport::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(140, 140, 140, 0.7);
-  background-clip: padding-box;
 }
 
 @layer base {
@@ -113,4 +97,20 @@ html[data-anim-scaled] *:not([data-no-anim-scale])::before,
 html[data-anim-scaled] *:not([data-no-anim-scale])::after {
   animation-duration: calc(160ms * var(--anim-scale, 1)) !important;
   transition-duration: calc(160ms * var(--anim-scale, 1)) !important;
+}
+
+/* Radix legt das Positionierungs-Transform auf diesen Wrapper. Den niemals
+   per Transition animieren, sonst gleitet das Dropdown beim Oeffnen aus der
+   Ecke herein (statt am Trigger zu erscheinen). Das Ein-/Ausblenden laeuft als
+   Animation auf dem Inhalt selbst und bleibt davon unberuehrt. */
+[data-radix-popper-content-wrapper] {
+  transition: none !important;
+}
+
+/* Edge/WebView2 blendet bei type=password ein eigenes Augen-Icon (Reveal) und
+   ein Loeschen-X ein. Beides wollen wir nicht (Passwort im Klartext zeigen ist
+   bei einem Tresor unerwuenscht) -> komplett ausblenden. */
+input[type="password"]::-ms-reveal,
+input[type="password"]::-ms-clear {
+  display: none;
 }

@@ -8,8 +8,10 @@
     "core:window:allow-set-theme",
     "core:window:allow-theme",
     "opener:default",
+    "opener:allow-open-url",
     "dialog:default",
     "clipboard-manager:allow-read-text",
-    "clipboard-manager:allow-write-text"
+    "clipboard-manager:allow-write-text",
+    "drag:default"
   ]
 }

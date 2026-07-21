@@ -1,10 +1,3 @@
-//! Eingebauter MCP-Server (Streamable HTTP auf 127.0.0.1).
-//!
-//! Bietet einer KI (z.B. Claude Code) drei Werkzeuge an: list_hosts, run_command,
-//! get_audit_log. run_command laeuft IMMER ueber Services::ai_run_command, also
-//! ueber das Gate (globaler Schalter, Auto-Aus) und ggf. die Freigabe. Private
-//! Schluessel verlassen den Kern nie. Abgesichert per Bearer-Token, Loopback-Bind
-//! und der eingebauten Host/Origin-Pruefung von rmcp.
 
 use std::sync::Arc;
 
@@ -32,7 +25,6 @@ use crate::model::{AiPolicy, AuthMethod, Host, NewHost, NewSnippet, Snippet};
 use crate::state::Services;
 use crate::vault::SecretStore;
 
-/// Reduzierte Host-Ansicht fuer die KI (keine Geheimnis-Verweise).
 #[derive(Serialize)]
 struct HostView {
     id: String,
@@ -44,8 +36,6 @@ struct HostView {
     ai_file_policy: AiPolicy,
 }
 
-/// Baut eine AuthMethod aus den von der KI gelieferten Feldern. Die KI gibt nie
-/// einen Geheimniswert, sie referenziert nur eine bestehende secret_id.
 fn build_auth(kind: &str, secret_id: Option<String>) -> std::result::Result<AuthMethod, String> {
     match kind {
         "password" => secret_id
@@ -67,38 +57,28 @@ fn parse_host_ids(ids: &[String]) -> std::result::Result<Vec<Uuid>, String> {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct RunCommandArgs {
-    /// Id of the host to run the command on (from list_hosts).
     host_id: String,
-    /// Shell command to execute.
     command: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct CreateHostArgs {
-    /// Display name.
     name: String,
-    /// Hostname or IP address.
     hostname: String,
-    /// Port, usually 22.
     port: u16,
-    /// SSH username.
     username: String,
-    /// One of "password", "key" or "agent".
     auth_kind: String,
-    /// Id of an existing credential from list_secrets. Required for password/key. The secret value is never seen or set by the AI.
     #[serde(default)]
     secret_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct UpdateHostArgs {
-    /// Id of the host to update (from list_hosts).
     host_id: String,
     name: String,
     hostname: String,
     port: u16,
     username: String,
-    /// One of "password", "key" or "agent".
     auth_kind: String,
     #[serde(default)]
     secret_id: Option<String>,
@@ -106,18 +86,14 @@ struct UpdateHostArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct CreateSnippetArgs {
-    /// Short label.
     label: String,
-    /// Shell script body.
     script: String,
-    /// Optional host ids this snippet targets.
     #[serde(default)]
     target_host_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct UpdateSnippetArgs {
-    /// Id of the snippet to update (from list_snippets).
     snippet_id: String,
     label: String,
     script: String,
@@ -126,39 +102,38 @@ struct UpdateSnippetArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DeleteSnippetArgs {
+    snippet_id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct SftpListArgs {
-    /// Id of the host (from list_hosts).
     host_id: String,
-    /// Absolute remote directory path to list.
     path: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct SftpDownloadArgs {
     host_id: String,
-    /// Remote file path to read.
     remote_path: String,
-    /// Local destination path to write.
     local_path: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct SftpUploadArgs {
     host_id: String,
-    /// Local file path to read.
     local_path: String,
-    /// Remote destination path to write.
     remote_path: String,
 }
 
 #[derive(Clone)]
-pub struct HelmsmanMcp {
+pub struct KestralMcp {
     services: Services,
-    tool_router: ToolRouter<HelmsmanMcp>,
+    tool_router: ToolRouter<KestralMcp>,
 }
 
 #[tool_router]
-impl HelmsmanMcp {
+impl KestralMcp {
     pub fn new(services: Services) -> Self {
         Self {
             services,
@@ -169,25 +144,12 @@ impl HelmsmanMcp {
     #[tool(description = "List the configured SSH hosts (id, name, address, user, ai policy) as JSON.")]
     async fn list_hosts(&self) -> Result<CallToolResult, McpError> {
         if !self.services.policy.is_active() {
-            return Ok(CallToolResult::error(vec![Content::text(
-                "AI access is disabled. Enable it in Helmsman first.",
-            )]));
+            return Ok(Self::disabled());
         }
-        let views: Vec<HostView> = self
-            .services
-            .hosts
-            .list()
-            .into_iter()
-            .map(|h| HostView {
-                id: h.id.to_string(),
-                name: h.name,
-                hostname: h.hostname,
-                port: h.port,
-                username: h.username,
-                ai_policy: h.ai_policy,
-                ai_file_policy: h.ai_file_policy,
-            })
-            .collect();
+        if !self.services.policy.caps().list_hosts {
+            return Ok(Self::cap_denied("listing hosts"));
+        }
+        let views = host_views(&self.services);
         let json = serde_json::to_string_pretty(&views).unwrap_or_else(|_| "[]".into());
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
@@ -199,11 +161,11 @@ impl HelmsmanMcp {
         &self,
         Parameters(RunCommandArgs { host_id, command }): Parameters<RunCommandArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let id = match Uuid::parse_str(&host_id) {
-            Ok(id) => id,
-            Err(_) => {
+        let id = match self.resolve_host(&host_id) {
+            Some(id) => id,
+            None => {
                 return Ok(CallToolResult::error(vec![Content::text(format!(
-                    "Invalid host_id: {host_id}"
+                    "Unknown host: {host_id}"
                 ))]))
             }
         };
@@ -227,11 +189,11 @@ impl HelmsmanMcp {
     #[tool(description = "Return the audit log of AI-issued actions as JSON.")]
     async fn get_audit_log(&self) -> Result<CallToolResult, McpError> {
         if !self.services.policy.is_active() {
-            return Ok(CallToolResult::error(vec![Content::text(
-                "AI access is disabled. Enable it in Helmsman first.",
-            )]));
+            return Ok(Self::disabled());
         }
-        // Nur KI-Aktionen, nie die manuell getippte Shell-Historie des Nutzers.
+        if !self.services.policy.caps().audit_log {
+            return Ok(Self::cap_denied("reading the audit log"));
+        }
         let entries = self.services.audit.list_ai();
         let json = serde_json::to_string_pretty(&entries).unwrap_or_else(|_| "[]".into());
         Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -241,6 +203,9 @@ impl HelmsmanMcp {
     async fn list_snippets(&self) -> Result<CallToolResult, McpError> {
         if !self.services.policy.is_active() {
             return Ok(Self::disabled());
+        }
+        if !self.services.policy.caps().list_snippets {
+            return Ok(Self::cap_denied("listing scripts"));
         }
         let items = self.services.snippets.list();
         let json = serde_json::to_string_pretty(&items).unwrap_or_else(|_| "[]".into());
@@ -253,6 +218,9 @@ impl HelmsmanMcp {
     async fn list_secrets(&self) -> Result<CallToolResult, McpError> {
         if !self.services.policy.is_active() {
             return Ok(Self::disabled());
+        }
+        if !self.services.policy.caps().list_secrets {
+            return Ok(Self::cap_denied("listing credentials"));
         }
         match self.services.vault.list_secrets() {
             Ok(metas) => {
@@ -272,6 +240,9 @@ impl HelmsmanMcp {
     ) -> Result<CallToolResult, McpError> {
         if !self.services.policy.is_active() {
             return Ok(Self::disabled());
+        }
+        if !self.services.policy.caps().manage_hosts {
+            return Ok(Self::cap_denied("creating or changing hosts"));
         }
         let auth = match build_auth(&a.auth_kind, a.secret_id) {
             Ok(au) => au,
@@ -316,11 +287,14 @@ impl HelmsmanMcp {
         if !self.services.policy.is_active() {
             return Ok(Self::disabled());
         }
-        let id = match Uuid::parse_str(&a.host_id) {
-            Ok(i) => i,
-            Err(_) => {
+        if !self.services.policy.caps().manage_hosts {
+            return Ok(Self::cap_denied("creating or changing hosts"));
+        }
+        let id = match self.resolve_host(&a.host_id) {
+            Some(i) => i,
+            None => {
                 return Ok(CallToolResult::error(vec![Content::text(format!(
-                    "Invalid host_id: {}",
+                    "Unknown host: {}",
                     a.host_id
                 ))]))
             }
@@ -374,6 +348,9 @@ impl HelmsmanMcp {
         if !self.services.policy.is_active() {
             return Ok(Self::disabled());
         }
+        if !self.services.policy.caps().manage_snippets {
+            return Ok(Self::cap_denied("creating or changing scripts"));
+        }
         let targets = match parse_host_ids(&a.target_host_ids) {
             Ok(t) => t,
             Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
@@ -410,6 +387,9 @@ impl HelmsmanMcp {
     ) -> Result<CallToolResult, McpError> {
         if !self.services.policy.is_active() {
             return Ok(Self::disabled());
+        }
+        if !self.services.policy.caps().manage_snippets {
+            return Ok(Self::cap_denied("creating or changing scripts"));
         }
         let id = match Uuid::parse_str(&a.snippet_id) {
             Ok(i) => i,
@@ -451,17 +431,67 @@ impl HelmsmanMcp {
     }
 
     #[tool(
+        description = "Delete a saved script. Irreversible, so name the script to the user before calling this."
+    )]
+    async fn delete_snippet(
+        &self,
+        Parameters(a): Parameters<DeleteSnippetArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if !self.services.policy.is_active() {
+            return Ok(Self::disabled());
+        }
+        if !self.services.policy.caps().manage_snippets {
+            return Ok(Self::cap_denied("deleting scripts"));
+        }
+        let id = match Uuid::parse_str(&a.snippet_id) {
+            Ok(i) => i,
+            Err(_) => {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Invalid snippet_id: {}",
+                    a.snippet_id
+                ))]))
+            }
+        };
+        let label = self
+            .services
+            .snippets
+            .list()
+            .into_iter()
+            .find(|s| s.id == id)
+            .map(|s| s.label)
+            .unwrap_or_else(|| a.snippet_id.clone());
+
+        match self.services.snippets.remove(id) {
+            Ok(()) => {
+                self.services.audit.record(
+                    id.to_string(),
+                    label.clone(),
+                    format!("delete snippet '{label}'"),
+                    "config",
+                    None,
+                    true,
+                    None,
+                );
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Deleted snippet '{label}'."
+                ))]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    #[tool(
         description = "List a remote directory over SFTP. Subject to the per-host file policy (may require approval)."
     )]
     async fn sftp_list(
         &self,
         Parameters(a): Parameters<SftpListArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let id = match Uuid::parse_str(&a.host_id) {
-            Ok(i) => i,
-            Err(_) => {
+        let id = match self.resolve_host(&a.host_id) {
+            Some(i) => i,
+            None => {
                 return Ok(CallToolResult::error(vec![Content::text(format!(
-                    "Invalid host_id: {}",
+                    "Unknown host: {}",
                     a.host_id
                 ))]))
             }
@@ -482,11 +512,11 @@ impl HelmsmanMcp {
         &self,
         Parameters(a): Parameters<SftpDownloadArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let id = match Uuid::parse_str(&a.host_id) {
-            Ok(i) => i,
-            Err(_) => {
+        let id = match self.resolve_host(&a.host_id) {
+            Some(i) => i,
+            None => {
                 return Ok(CallToolResult::error(vec![Content::text(format!(
-                    "Invalid host_id: {}",
+                    "Unknown host: {}",
                     a.host_id
                 ))]))
             }
@@ -511,11 +541,11 @@ impl HelmsmanMcp {
         &self,
         Parameters(a): Parameters<SftpUploadArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let id = match Uuid::parse_str(&a.host_id) {
-            Ok(i) => i,
-            Err(_) => {
+        let id = match self.resolve_host(&a.host_id) {
+            Some(i) => i,
+            None => {
                 return Ok(CallToolResult::error(vec![Content::text(format!(
-                    "Invalid host_id: {}",
+                    "Unknown host: {}",
                     a.host_id
                 ))]))
             }
@@ -533,44 +563,83 @@ impl HelmsmanMcp {
         }
     }
 
-    /// Standard-Fehlerantwort, wenn der KI-Zugriff global aus ist.
     fn disabled() -> CallToolResult {
         CallToolResult::error(vec![Content::text(
-            "AI access is disabled. Enable it in Helmsman first.",
+            "AI access is disabled. Enable it in Kestral first.",
         )])
+    }
+
+    fn cap_denied(what: &str) -> CallToolResult {
+        CallToolResult::error(vec![Content::text(format!(
+            "Not allowed: {what} is disabled in Kestral's AI permissions."
+        ))])
+    }
+
+    fn resolve_host(&self, id_or_name: &str) -> Option<Uuid> {
+        resolve_host_in(&self.services, id_or_name)
     }
 }
 
-// Das #[tool_handler]-Makro erzeugt call_tool/list_tools/get_tool und ein
-// passendes get_info (das die Tools advertised), da wir keines selbst definieren.
+fn host_views(services: &Services) -> Vec<HostView> {
+    services
+        .hosts
+        .list()
+        .into_iter()
+        .map(|h| HostView {
+            id: h.id.to_string(),
+            name: h.name,
+            hostname: h.hostname,
+            port: h.port,
+            username: h.username,
+            ai_policy: h.ai_policy,
+            ai_file_policy: h.ai_file_policy,
+        })
+        .collect()
+}
+
+fn resolve_host_in(services: &Services, id_or_name: &str) -> Option<Uuid> {
+    if let Ok(id) = Uuid::parse_str(id_or_name) {
+        return Some(id);
+    }
+    let needle = id_or_name.trim().to_lowercase();
+    services
+        .hosts
+        .list()
+        .into_iter()
+        .find(|h| h.name.to_lowercase() == needle)
+        .map(|h| h.id)
+}
+
 #[tool_handler(router = self.tool_router)]
-impl ServerHandler for HelmsmanMcp {}
+impl ServerHandler for KestralMcp {}
+
+pub type Bearer = Arc<std::sync::RwLock<String>>;
 
 #[derive(Clone)]
 struct AuthState {
-    bearer: Arc<String>,
+    bearer: Bearer,
 }
 
-/// Bearer-Token-Pruefung. Claude Code sendet den Header
-/// `Authorization: Bearer <token>`. Loopback-Bind plus rmcps eingebaute
-/// Host/Origin-Pruefung uebernehmen den Rest.
 async fn auth_middleware(
     axum::extract::State(state): axum::extract::State<AuthState>,
     headers: HeaderMap,
     request: Request<Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    let expected = format!("Bearer {}", state.bearer);
+    let expected = {
+        let b = state.bearer.read().unwrap();
+        format!("Bearer {}", *b)
+    };
     match headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
         Some(v) if v == expected => Ok(next.run(request).await),
         _ => Err(StatusCode::UNAUTHORIZED),
     }
 }
 
-fn build_router(services: Services, token: String, port: u16, ct: CancellationToken) -> Router {
-    let service: StreamableHttpService<HelmsmanMcp, LocalSessionManager> =
+fn build_router(services: Services, bearer: Bearer, port: u16, ct: CancellationToken) -> Router {
+    let service: StreamableHttpService<KestralMcp, LocalSessionManager> =
         StreamableHttpService::new(
-            move || Ok(HelmsmanMcp::new(services.clone())),
+            move || Ok(KestralMcp::new(services.clone())),
             LocalSessionManager::default().into(),
             StreamableHttpServerConfig::default()
                 .with_allowed_hosts([
@@ -582,24 +651,21 @@ fn build_router(services: Services, token: String, port: u16, ct: CancellationTo
                 .with_cancellation_token(ct),
         );
 
-    let auth = AuthState {
-        bearer: Arc::new(token),
-    };
+    let auth = AuthState { bearer };
 
     Router::new()
         .nest_service("/mcp", service)
         .layer(middleware::from_fn_with_state(auth, auth_middleware))
 }
 
-/// Startet den MCP-Server. Bei Erfolg wird McpInfo.running im State auf true gesetzt.
 pub async fn serve(
     app: tauri::AppHandle,
     services: Services,
-    token: String,
+    bearer: Bearer,
     port: u16,
     ct: CancellationToken,
 ) -> std::io::Result<()> {
-    let router = build_router(services, token, port, ct.clone());
+    let router = build_router(services, bearer, port, ct.clone());
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
 
     {
@@ -611,7 +677,7 @@ pub async fn serve(
         }
     }
 
-    tracing::info!("Helmsman MCP listening on http://127.0.0.1:{port}/mcp");
+    tracing::info!("Kestral MCP listening on http://127.0.0.1:{port}/mcp");
     axum::serve(listener, router)
         .with_graceful_shutdown(async move { ct.cancelled().await })
         .await
