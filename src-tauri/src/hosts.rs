@@ -15,6 +15,13 @@ pub struct HostStore {
     hosts: Mutex<Vec<Host>>,
 }
 
+fn name_taken(hosts: &[Host], name: &str, self_id: Uuid) -> bool {
+    let needle = name.trim().to_lowercase();
+    hosts
+        .iter()
+        .any(|h| h.id != self_id && h.name.trim().to_lowercase() == needle)
+}
+
 impl HostStore {
     pub fn new(path: PathBuf, vault: Arc<Vault>) -> Self {
         Self {
@@ -110,6 +117,12 @@ impl HostStore {
     pub fn add(&self, new_host: NewHost) -> Result<Host> {
         let host = new_host.into_host();
         let mut hosts = self.hosts.lock().unwrap();
+        if name_taken(&hosts, &host.name, host.id) {
+            return Err(AppError::Other(format!(
+                "A host named '{}' already exists",
+                host.name
+            )));
+        }
         hosts.push(host.clone());
         self.save(&hosts)?;
         Ok(host)
@@ -117,6 +130,12 @@ impl HostStore {
 
     pub fn update(&self, host: Host) -> Result<()> {
         let mut hosts = self.hosts.lock().unwrap();
+        if name_taken(&hosts, &host.name, host.id) {
+            return Err(AppError::Other(format!(
+                "A host named '{}' already exists",
+                host.name
+            )));
+        }
         let slot = hosts
             .iter_mut()
             .find(|h| h.id == host.id)
@@ -201,6 +220,34 @@ mod tests {
 
         vault.lock();
         assert!(store.load().is_err(), "ohne Schluessel kein Lesen");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rejects_duplicate_host_names() {
+        let dir = tmp_dir("dup");
+        std::fs::create_dir_all(&dir).unwrap();
+        let vault = Arc::new(Vault::new(dir.join("vault.json")));
+        vault.create("pw").unwrap();
+        let store = HostStore::new(dir.join("hosts.json"), vault.clone());
+        store.load().unwrap();
+
+        let mk = |name: &str| NewHost {
+            name: name.to_string(),
+            hostname: "h".into(),
+            port: 22,
+            username: "root".into(),
+            auth: crate::model::AuthMethod::Password {
+                secret_id: "s".into(),
+            },
+            ai_policy: AiPolicy::Locked,
+            ai_file_policy: AiPolicy::Locked,
+        };
+
+        store.add(mk("prod")).unwrap();
+        assert!(store.add(mk("PROD")).is_err(), "kein zweiter gleicher Name");
+        assert_eq!(store.list().len(), 1);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

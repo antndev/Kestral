@@ -48,6 +48,11 @@ Use `upload` instead of writing files through shell heredocs. It avoids quoting
 problems entirely and it is logged as a file transfer. If you need a tool that has
 no shortcut above, run `tools` to see what exists and then use `call`.
 
+For `upload` and `download` the LOCAL path is relative to Kestral's own transfer
+folder (`~/.kestral/ai-transfers`); absolute paths and anything outside that folder
+are refused on purpose. To upload a file, write it into that folder first, then pass
+just its name. Downloads land in the same folder.
+
 ## How to work
 
 1. Run `status` first. If AI access is off, stop and ask the user to switch it on

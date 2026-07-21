@@ -22,6 +22,7 @@ pub struct CommandOutput {
 pub struct ClientHandler {
     host: String,
     port: u16,
+    key_changed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl client::Handler for ClientHandler {
@@ -31,30 +32,36 @@ impl client::Handler for ClientHandler {
         &mut self,
         server_public_key: &ssh_key::PublicKey,
     ) -> std::result::Result<bool, Self::Error> {
+        let fp = server_public_key.fingerprint(ssh_key::HashAlg::Sha256);
         match russh::keys::check_known_hosts(&self.host, self.port, server_public_key) {
             Ok(true) => Ok(true),
             Ok(false) => {
-                if let Some(path) = known_hosts_path() {
-                    if path.exists() {
-                        if let Err(e) = std::fs::File::open(&path) {
-                            tracing::error!(
-                                "known_hosts vorhanden, aber nicht lesbar: {e}, Verbindung abgelehnt"
-                            );
-                            return Ok(false);
-                        }
-                    }
-                }
+                tracing::info!(
+                    "TOFU: neuer Host {}:{} akzeptiert, Fingerprint {fp}",
+                    self.host,
+                    self.port
+                );
                 if let Err(e) = append_known_host(&self.host, self.port, server_public_key) {
                     tracing::warn!("known_hosts schreiben fehlgeschlagen: {e}");
                 }
                 Ok(true)
             }
             Err(russh::keys::Error::KeyChanged { line }) => {
-                tracing::error!("Host-Key geaendert (known_hosts Zeile {line}), abgelehnt");
+                tracing::error!(
+                    "Host-Key GEAENDERT fuer {}:{} (known_hosts Zeile {line}), Fingerprint {fp}, abgelehnt",
+                    self.host,
+                    self.port
+                );
+                self.key_changed
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
                 Ok(false)
             }
             Err(e) => {
-                tracing::error!("known_hosts pruefen fehlgeschlagen: {e}, Verbindung abgelehnt");
+                tracing::error!(
+                    "known_hosts pruefen fehlgeschlagen fuer {}:{}: {e}, Verbindung abgelehnt",
+                    self.host,
+                    self.port
+                );
                 Ok(false)
             }
         }
@@ -87,17 +94,26 @@ impl SshManager {
             ..Default::default()
         });
 
+        let key_changed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let handler = ClientHandler {
             host: host.hostname.clone(),
             port: host.port,
+            key_changed: key_changed.clone(),
         };
 
         on_stage("connecting");
         let connect_fut = client::connect(config, (host.hostname.as_str(), host.port), handler);
         let mut session =
             match tokio::time::timeout(std::time::Duration::from_secs(15), connect_fut).await {
-                Ok(result) => {
-                    result.map_err(|e| AppError::Ssh(format!("Verbindung fehlgeschlagen: {e}")))?
+                Ok(Ok(session)) => session,
+                Ok(Err(e)) => {
+                    if key_changed.load(std::sync::atomic::Ordering::SeqCst) {
+                        return Err(AppError::HostKeyChanged(format!(
+                            "{}:{}",
+                            host.hostname, host.port
+                        )));
+                    }
+                    return Err(AppError::Ssh(format!("Verbindung fehlgeschlagen: {e}")));
                 }
                 Err(_) => {
                     return Err(AppError::Ssh(

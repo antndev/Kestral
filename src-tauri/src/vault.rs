@@ -9,7 +9,8 @@ use chacha20poly1305::{KeyInit, XChaCha20Poly1305, XNonce};
 use rand::rngs::OsRng;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use zeroize::Zeroizing;
+use subtle::ConstantTimeEq;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::error::{AppError, Result};
 
@@ -42,8 +43,9 @@ pub struct SecretMeta {
     pub kind: SecretKind,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 struct Record {
+    #[zeroize(skip)]
     kind: SecretKind,
     value: Vec<u8>,
 }
@@ -118,7 +120,7 @@ impl Vault {
     }
 
     fn persist(&self, unlocked: &Unlocked) -> Result<()> {
-        let plaintext = serde_json::to_vec(&unlocked.data)?;
+        let plaintext = Zeroizing::new(serde_json::to_vec(&unlocked.data)?);
 
         let mut nonce_bytes = [0u8; 24];
         OsRng.fill_bytes(&mut nonce_bytes);
@@ -139,7 +141,7 @@ impl Vault {
             .encrypt(
                 XNonce::from_slice(&nonce_bytes),
                 Payload {
-                    msg: &plaintext,
+                    msg: plaintext.as_slice(),
                     aad: &aad,
                 },
             )
@@ -172,6 +174,9 @@ impl Vault {
         let mut salt = [0u8; 16];
         salt.copy_from_slice(&salt_vec);
 
+        if file.header.m_cost > 1_048_576 || file.header.t_cost > 10 || file.header.p_cost > 4 {
+            return Err(AppError::Crypto);
+        }
         let params = argon2::Params::new(
             file.header.m_cost,
             file.header.t_cost,
@@ -201,6 +206,7 @@ impl Vault {
                 },
             )
             .map_err(|_| AppError::VaultAuth)?;
+        let plaintext = Zeroizing::new(plaintext);
         let data: BTreeMap<String, Record> = serde_json::from_slice(&plaintext)?;
 
         let outdated = file.header.m_cost != KDF_M_COST
@@ -238,7 +244,7 @@ impl Vault {
         let unlocked = guard.as_mut().ok_or(AppError::VaultLocked)?;
 
         let check = Vault::derive_key(current, &unlocked.salt)?;
-        if check.as_slice() != unlocked.key.as_slice() {
+        if !bool::from(check.as_slice().ct_eq(unlocked.key.as_slice())) {
             return Err(AppError::VaultAuth);
         }
 
@@ -423,6 +429,9 @@ impl SecretStore for Vault {
     }
 
     fn put_secret(&self, id: &str, kind: SecretKind, value: &[u8]) -> Result<()> {
+        if is_reserved(id) {
+            return Err(AppError::NotFound(id.to_string()));
+        }
         let mut guard = self.state.lock().unwrap();
         let unlocked = guard.as_mut().ok_or(AppError::VaultLocked)?;
         unlocked.data.insert(
@@ -436,6 +445,9 @@ impl SecretStore for Vault {
     }
 
     fn get_secret(&self, id: &str) -> Result<Zeroizing<Vec<u8>>> {
+        if is_reserved(id) {
+            return Err(AppError::NotFound(id.to_string()));
+        }
         let guard = self.state.lock().unwrap();
         let unlocked = guard.as_ref().ok_or(AppError::VaultLocked)?;
         let rec = unlocked
@@ -446,6 +458,9 @@ impl SecretStore for Vault {
     }
 
     fn delete_secret(&self, id: &str) -> Result<()> {
+        if is_reserved(id) {
+            return Err(AppError::NotFound(id.to_string()));
+        }
         let mut guard = self.state.lock().unwrap();
         let unlocked = guard.as_mut().ok_or(AppError::VaultLocked)?;
         unlocked.data.remove(id);
@@ -485,7 +500,7 @@ pub fn load_or_create_token(path: &std::path::Path) -> String {
         }
     }
     let token = random_token();
-    if let Err(e) = std::fs::write(path, &token) {
+    if let Err(e) = crate::util::write_private(path, token.as_bytes()) {
         tracing::error!(
             "MCP-Token konnte nicht unter {} gespeichert werden: {e}. Die einmalige \
              `claude mcp add`-Registrierung bleibt nach einem Neustart nicht gueltig.",
@@ -606,6 +621,40 @@ mod tests {
         assert!(v.unlock(old).is_err());
         v.unlock(new).unwrap();
         assert_eq!(v.get_secret("k").unwrap().to_vec(), b"val".to_vec());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn reserved_ids_are_not_reachable_through_secret_api() {
+        let path = tmp_vault_path("reserved");
+        let v = Vault::new(path.clone());
+        v.create("pw").unwrap();
+
+        assert!(v.get_secret(DEK_ID).is_err());
+        assert!(v.get_secret(HOSTS_ID).is_err());
+        assert!(v.put_secret(DEK_ID, SecretKind::Password, b"x").is_err());
+        assert!(v.delete_secret(DEK_ID).is_err());
+
+        v.put_blob(HOSTS_ID, b"[]").unwrap();
+        v.seal_envelope(b"still works").unwrap();
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn absurd_kdf_cost_in_header_is_rejected_not_allocated() {
+        let path = tmp_vault_path("kdf");
+        let v = Vault::new(path.clone());
+        v.create("pw").unwrap();
+        v.lock();
+
+        let raw = std::fs::read(&path).unwrap();
+        let mut file: VaultFile = serde_json::from_slice(&raw).unwrap();
+        file.header.m_cost = 4_194_304;
+        std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+
+        assert!(matches!(v.unlock("pw"), Err(AppError::Crypto)));
 
         let _ = std::fs::remove_file(&path);
     }

@@ -75,6 +75,7 @@ pub fn run() {
         .setup(|app| {
             let base_dir = kestral_data_dir();
             let _ = std::fs::create_dir_all(&base_dir);
+            util::restrict_dir(&base_dir);
             let vault_path = base_dir.join("vault.json");
 
             let vault = Arc::new(vault::Vault::new(vault_path));
@@ -92,6 +93,7 @@ pub fn run() {
                     base_dir.join("snippets.json"),
                     vault.clone(),
                 )),
+                transfers_dir: base_dir.join("ai-transfers"),
             };
 
             let token_path = base_dir.join("mcp_token");

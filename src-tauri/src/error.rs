@@ -27,6 +27,10 @@ pub enum AppError {
     Serde(#[from] serde_json::Error),
     #[error("Crypto error")]
     Crypto,
+    #[error("Host key changed for {0}. Refused. If this is expected, remove the old key from known_hosts.")]
+    HostKeyChanged(String),
+    #[error("Path not allowed: {0}")]
+    PathNotAllowed(String),
     #[error("SSH: {0}")]
     Ssh(String),
     #[error("{0}")]

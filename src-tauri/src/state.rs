@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
@@ -30,6 +31,58 @@ pub struct Services {
     pub audit: Arc<AuditLog>,
     pub ssh: Arc<SshManager>,
     pub snippets: Arc<SnippetStore>,
+    pub transfers_dir: PathBuf,
+}
+
+fn confine_ai_path(base: &Path, user_path: &str) -> Result<PathBuf> {
+    let raw = Path::new(user_path);
+    if raw.as_os_str().is_empty() {
+        return Err(AppError::PathNotAllowed("empty path".into()));
+    }
+    if raw.is_absolute() {
+        return Err(AppError::PathNotAllowed(format!(
+            "'{user_path}' is absolute; AI transfers use a name relative to {}",
+            base.display()
+        )));
+    }
+    for comp in raw.components() {
+        match comp {
+            std::path::Component::Normal(_) | std::path::Component::CurDir => {}
+            _ => {
+                return Err(AppError::PathNotAllowed(format!(
+                    "'{user_path}' must be a plain relative name without '..' or a drive"
+                )))
+            }
+        }
+    }
+    std::fs::create_dir_all(base)
+        .map_err(|e| AppError::PathNotAllowed(format!("transfer dir {}: {e}", base.display())))?;
+    crate::util::restrict_dir(base);
+    let base_c = base
+        .canonicalize()
+        .map_err(|e| AppError::PathNotAllowed(format!("transfer dir {}: {e}", base.display())))?;
+    let joined = base_c.join(raw);
+    if let Some(parent) = joined.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let mut probe = joined.clone();
+    loop {
+        if probe.exists() {
+            let real = probe
+                .canonicalize()
+                .map_err(|e| AppError::PathNotAllowed(format!("{user_path}: {e}")))?;
+            if !real.starts_with(&base_c) {
+                return Err(AppError::PathNotAllowed(format!(
+                    "'{user_path}' resolves outside the AI transfer directory"
+                )));
+            }
+            break;
+        }
+        if !probe.pop() {
+            break;
+        }
+    }
+    Ok(joined)
 }
 
 impl Services {
@@ -215,20 +268,20 @@ impl Services {
 
     pub async fn ai_sftp_download(&self, host_id: Uuid, remote: &str, local: &str) -> Result<u64> {
         let action = format!("sftp download {remote} -> {local}");
+        let safe_local = confine_ai_path(&self.transfers_dir, local)?;
         let (host, decision) = self.authorize_file(host_id, &action).await?;
         let result =
-            sftp::one_shot_download(&self.ssh, &self.vault, &host, remote, std::path::Path::new(local))
-                .await;
+            sftp::one_shot_download(&self.ssh, &self.vault, &host, remote, &safe_local).await;
         self.audit_file(&host, &action, decision, &result);
         result
     }
 
     pub async fn ai_sftp_upload(&self, host_id: Uuid, local: &str, remote: &str) -> Result<u64> {
         let action = format!("sftp upload {local} -> {remote}");
+        let safe_local = confine_ai_path(&self.transfers_dir, local)?;
         let (host, decision) = self.authorize_file(host_id, &action).await?;
         let result =
-            sftp::one_shot_upload(&self.ssh, &self.vault, &host, std::path::Path::new(local), remote)
-                .await;
+            sftp::one_shot_upload(&self.ssh, &self.vault, &host, &safe_local, remote).await;
         self.audit_file(&host, &action, decision, &result);
         result
     }
@@ -247,4 +300,28 @@ pub struct AppState {
     pub mcp_cancel: tokio_util::sync::CancellationToken,
     pub mcp_bearer: crate::mcp::Bearer,
     pub mcp_token_path: std::path::PathBuf,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ai_transfer_path_cannot_escape_the_sandbox() {
+        let base =
+            std::env::temp_dir().join(format!("kestral_confine_{}", uuid::Uuid::new_v4()));
+
+        assert!(confine_ai_path(&base, "note.txt").is_ok());
+        assert!(confine_ai_path(&base, "sub/note.txt").is_ok());
+
+        assert!(confine_ai_path(&base, "").is_err());
+        assert!(confine_ai_path(&base, "../escape").is_err());
+        assert!(confine_ai_path(&base, "a/../../escape").is_err());
+        #[cfg(unix)]
+        assert!(confine_ai_path(&base, "/etc/passwd").is_err());
+        #[cfg(windows)]
+        assert!(confine_ai_path(&base, "C:/Windows/System32/x").is_err());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

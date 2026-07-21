@@ -131,12 +131,17 @@ impl AuditLog {
             Some(l) => l,
             None => return,
         };
-        let opened = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path);
+        let mut opts = std::fs::OpenOptions::new();
+        opts.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let opened = opts.open(&self.path);
         match opened {
             Ok(mut f) => {
+                let _ = crate::util::restrict(&f);
                 if let Err(e) = f.write_all(line.as_bytes()) {
                     tracing::error!("Audit-Eintrag nicht geschrieben: {e}");
                 }

@@ -40,6 +40,29 @@ npm run build
 - `src/` React UI (`App.tsx`, `SshTerminal.tsx`, `components/ui/` ReUI components)
 - `src-tauri/src/` Rust core (`ssh.rs`, `vault.rs`, `mcp.rs`, `policy.rs`, `audit.rs`, ...)
 
+## Security
+
+- **Key hierarchy.** Master password to key-encryption key (KEK) via Argon2id
+  (v19, m=64 MiB, t=2, p=1, 32-byte key, 16-byte random salt per vault). The KEK
+  encrypts the whole vault as one XChaCha20-Poly1305 blob with the header as
+  authenticated data. Inside sits a random 32-byte data key (DEK) that encrypts the
+  audit log and the host/snippet records. A password change re-derives only the KEK,
+  so nothing else has to be rewritten. Opening a vault written with weaker parameters
+  transparently re-derives it at current strength.
+- **MCP server.** Loopback only (`127.0.0.1:4517`), bearer token (192 bits, constant
+  time compare), Host and Origin both validated. No CORS layer, so no browser origin
+  is ever granted access.
+- **AI is gated.** Off by default. Each host has separate command and file policies
+  (`locked` / `confirm` / `free`). Changing a host's address, port or user resets its
+  AI policy to `locked`. AI file transfer is confined to `~/.kestral/ai-transfers`;
+  paths outside it are refused.
+- **Host keys.** Trust-on-first-use with the SHA256 fingerprint logged; a changed key
+  is refused with a distinct error. Note: entries currently live in the OpenSSH
+  `~/.ssh/known_hosts`, not yet in the app's own encrypted store (`KESTRAL_DATA_DIR`
+  does not relocate it). This is an open item.
+
+See [SECURITY.md](SECURITY.md) for the threat model and how to report issues.
+
 ## License
 
 Kestral is source-available, not open source. It is free for personal and other

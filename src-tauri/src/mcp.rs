@@ -278,7 +278,7 @@ impl KestralMcp {
     }
 
     #[tool(
-        description = "Update an existing host's connection fields. The per-host AI policies are preserved and cannot be changed by the AI."
+        description = "Update an existing host's connection fields. If the hostname, port or username changes, the per-host AI policies are reset to locked so the user has to re-grant access to the new destination. The AI can never widen a policy."
     )]
     async fn update_host(
         &self,
@@ -307,6 +307,9 @@ impl KestralMcp {
             Ok(au) => au,
             Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
         };
+        let target_changed = a.hostname != existing.hostname
+            || a.port != existing.port
+            || a.username != existing.username;
         let updated = Host {
             id,
             name: a.name,
@@ -314,17 +317,33 @@ impl KestralMcp {
             port: a.port,
             username: a.username,
             auth,
-            ai_policy: existing.ai_policy,
-            ai_file_policy: existing.ai_file_policy,
+            ai_policy: if target_changed {
+                AiPolicy::Locked
+            } else {
+                existing.ai_policy
+            },
+            ai_file_policy: if target_changed {
+                AiPolicy::Locked
+            } else {
+                existing.ai_file_policy
+            },
         };
         match self.services.hosts.update(updated.clone()) {
             Ok(()) => {
+                let note = if target_changed {
+                    " Connection target changed, so AI access was reset to locked; the user must re-enable it."
+                } else {
+                    ""
+                };
                 self.services.audit.record(
                     id.to_string(),
                     updated.name.clone(),
                     format!(
-                        "update host {}@{}:{}",
-                        updated.username, updated.hostname, updated.port
+                        "update host {}@{}:{}{}",
+                        updated.username,
+                        updated.hostname,
+                        updated.port,
+                        if target_changed { " (relocked)" } else { "" }
                     ),
                     "config",
                     None,
@@ -332,7 +351,7 @@ impl KestralMcp {
                     None,
                 );
                 Ok(CallToolResult::success(vec![Content::text(format!(
-                    "Updated host '{}'.",
+                    "Updated host '{}'.{note}",
                     updated.name
                 ))]))
             }
@@ -630,9 +649,15 @@ async fn auth_middleware(
         let b = state.bearer.read().unwrap();
         format!("Bearer {}", *b)
     };
-    match headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
-        Some(v) if v == expected => Ok(next.run(request).await),
-        _ => Err(StatusCode::UNAUTHORIZED),
+    let provided = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    use subtle::ConstantTimeEq;
+    if bool::from(provided.as_bytes().ct_eq(expected.as_bytes())) {
+        Ok(next.run(request).await)
+    } else {
+        Err(StatusCode::UNAUTHORIZED)
     }
 }
 
@@ -647,6 +672,10 @@ fn build_router(services: Services, bearer: Bearer, port: u16, ct: CancellationT
                     format!("127.0.0.1:{port}"),
                     "localhost".to_string(),
                     format!("localhost:{port}"),
+                ])
+                .with_allowed_origins([
+                    format!("http://127.0.0.1:{port}"),
+                    format!("http://localhost:{port}"),
                 ])
                 .with_cancellation_token(ct),
         );
