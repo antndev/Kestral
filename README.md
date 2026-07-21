@@ -71,4 +71,4 @@ use, homelab, hobby projects, study, and use by nonprofits, schools and governme
 bodies. Any commercial use, including internal use inside a for-profit company,
 requires a separate commercial license.
 
-Commercial licensing: write to anton@schmid-koenig.de. Copyright 2026 Anton Schmid-Koenig.
+Commercial licensing: write to antonkonig691@gmail.com. Copyright 2026 Anton.

@@ -2,17 +2,12 @@
 name = "kestral"
 version = "0.1.0"
 description = "SSH client with an encrypted vault and a built-in MCP server for controlled AI access"
-authors = ["Anton Schmid-Koenig <anton@schmid-koenig.de>"]
+authors = ["Anton <antonkonig691@gmail.com>"]
 edition = "2021"
 license = "PolyForm-Noncommercial-1.0.0"
 repository = "https://github.com/antndev/Kestral"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [lib]
-# The `_lib` suffix may seem redundant but it is necessary
-# to make the lib name unique and wouldn't conflict with the bin name.
-# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "kestral_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
@@ -23,14 +18,10 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
-# Native Datei-Dialoge fuer den SFTP-Browser (Datei waehlen / Speicherort)
 tauri-plugin-dialog = "2"
-# Natives Clipboard (kein Browser-Berechtigungs-Popup im Webview)
 tauri-plugin-clipboard-manager = "2"
-# Datei aus dem SFTP-Browser per Drag&Drop in den Windows Explorer ziehen
 tauri-plugin-drag = "2"
 
-# Eingebauter MCP-Server (Streamable HTTP auf Loopback) fuer kontrollierten KI-Zugriff
 rmcp = { version = "1.8", features = ["server", "macros", "schemars", "transport-streamable-http-server"] }
 schemars = "1.0"
 axum = "0.8"
@@ -38,26 +29,20 @@ tokio-util = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Async runtime (axum/rmcp/russh laufen auf tokio)
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "net", "process"] }
 
-# Fehler und Hilfstypen
 thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde", "clock"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 
-# SSH (ring-Backend spart unter Windows die aws-lc-rs Buildkette)
 russh = { version = "0.61", default-features = false, features = ["ring"] }
-# SFTP-Subsystem-Client (laeuft ueber einen russh-Kanal)
 russh-sftp = "2"
 
-# Verschluesselter Schluesselspeicher
 argon2 = "0.5"
 chacha20poly1305 = "0.10"
 zeroize = { version = "1", features = ["derive"] }
 rand = "0.8"
 base64 = "0.22"
 subtle = "2"
-

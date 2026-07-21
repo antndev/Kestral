@@ -7,7 +7,7 @@ Kestral is pre-1.0 and moves fast. Only the latest `0.1.x` is supported.
 Please do not open a public issue for a security problem. Report it privately:
 
 - GitHub: enable and use Private Vulnerability Reporting on this repository, or
-- Email: anton@schmid-koenig.de
+- Email: antonkonig691@gmail.com
 
 I aim to acknowledge within a few days. Please include what you found, how to
 reproduce it, and the impact you see.
