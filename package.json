@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Desktop SSH client with an encrypted vault and a built-in MCP server for controlled AI access to your servers",
   "license": "PolyForm-Noncommercial-1.0.0",
-  "author": "Anton <antonkonig691@gmail.com>",
+  "author": "antndev <antonkonig691@gmail.com>",
   "repository": {
     "type": "git",
     "url": "https://github.com/antndev/Kestral.git"

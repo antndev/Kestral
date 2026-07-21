@@ -2,7 +2,7 @@
 name = "kestral"
 version = "0.1.0"
 description = "SSH client with an encrypted vault and a built-in MCP server for controlled AI access"
-authors = ["Anton <antonkonig691@gmail.com>"]
+authors = ["antndev <antonkonig691@gmail.com>"]
 edition = "2021"
 license = "PolyForm-Noncommercial-1.0.0"
 repository = "https://github.com/antndev/Kestral"
