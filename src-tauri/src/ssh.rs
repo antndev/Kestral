@@ -37,18 +37,18 @@ impl client::Handler for ClientHandler {
             Ok(true) => Ok(true),
             Ok(false) => {
                 tracing::info!(
-                    "TOFU: neuer Host {}:{} akzeptiert, Fingerprint {fp}",
+                    "TOFU: new host {}:{} accepted, fingerprint {fp}",
                     self.host,
                     self.port
                 );
                 if let Err(e) = append_known_host(&self.host, self.port, server_public_key) {
-                    tracing::warn!("known_hosts schreiben fehlgeschlagen: {e}");
+                    tracing::warn!("writing known_hosts failed: {e}");
                 }
                 Ok(true)
             }
             Err(russh::keys::Error::KeyChanged { line }) => {
                 tracing::error!(
-                    "Host-Key GEAENDERT fuer {}:{} (known_hosts Zeile {line}), Fingerprint {fp}, abgelehnt",
+                    "Host key CHANGED for {}:{} (known_hosts line {line}), fingerprint {fp}, refused",
                     self.host,
                     self.port
                 );
@@ -58,7 +58,7 @@ impl client::Handler for ClientHandler {
             }
             Err(e) => {
                 tracing::error!(
-                    "known_hosts pruefen fehlgeschlagen fuer {}:{}: {e}, Verbindung abgelehnt",
+                    "checking known_hosts failed for {}:{}: {e}, connection refused",
                     self.host,
                     self.port
                 );
@@ -113,11 +113,11 @@ impl SshManager {
                             host.hostname, host.port
                         )));
                     }
-                    return Err(AppError::Ssh(format!("Verbindung fehlgeschlagen: {e}")));
+                    return Err(AppError::Ssh(format!("Connection failed: {e}")));
                 }
                 Err(_) => {
                     return Err(AppError::Ssh(
-                        "Verbindung: Zeitueberschreitung nach 15s".into(),
+                        "Connection timed out after 15s".into(),
                     ))
                 }
             };
@@ -125,7 +125,7 @@ impl SshManager {
         on_stage("authenticating");
         let auth = self.authenticate(&mut session, host, vault).await?;
         if !auth.success() {
-            return Err(AppError::Ssh("Authentifizierung abgelehnt".into()));
+            return Err(AppError::Ssh("Authentication rejected".into()));
         }
         Ok(session)
     }
@@ -151,7 +151,7 @@ impl SshManager {
         let mut channel = session
             .channel_open_session()
             .await
-            .map_err(|e| AppError::Ssh(format!("Kanal: {e}")))?;
+            .map_err(|e| AppError::Ssh(format!("Channel: {e}")))?;
         if pty {
             channel
                 .request_pty(true, "xterm-256color", 120, 34, 0, 0, &[])
@@ -220,20 +220,20 @@ impl SshManager {
                 let bytes = vault.get_secret(secret_id)?;
                 let password = zeroize::Zeroizing::new(
                     std::str::from_utf8(&bytes)
-                        .map_err(|_| AppError::Ssh("Passwort ist kein gueltiges UTF-8".into()))?
+                        .map_err(|_| AppError::Ssh("Password is not valid UTF-8".into()))?
                         .to_owned(),
                 );
                 session
                     .authenticate_password(host.username.clone(), password.as_str())
                     .await
-                    .map_err(|e| AppError::Ssh(format!("Auth (Passwort): {e}")))
+                    .map_err(|e| AppError::Ssh(format!("Auth (password): {e}")))
             }
             AuthMethod::Key { secret_id } => {
                 let bytes = vault.get_secret(secret_id)?;
                 let key_str = std::str::from_utf8(&bytes)
-                    .map_err(|_| AppError::Ssh("Schluessel ist kein gueltiges UTF-8".into()))?;
+                    .map_err(|_| AppError::Ssh("Key is not valid UTF-8".into()))?;
                 let key = decode_secret_key(key_str, None)
-                    .map_err(|e| AppError::Ssh(format!("Schluessel laden: {e}")))?;
+                    .map_err(|e| AppError::Ssh(format!("Load key: {e}")))?;
                 let hash = session
                     .best_supported_rsa_hash()
                     .await
@@ -245,10 +245,10 @@ impl SshManager {
                         PrivateKeyWithHashAlg::new(Arc::new(key), hash),
                     )
                     .await
-                    .map_err(|e| AppError::Ssh(format!("Auth (Schluessel): {e}")))
+                    .map_err(|e| AppError::Ssh(format!("Auth (key): {e}")))
             }
             AuthMethod::Agent => Err(AppError::Ssh(
-                "Agent-Login folgt spaeter (unter Windows Pageant/Named Pipe)".into(),
+                "Agent login is not implemented yet (Pageant/Named Pipe on Windows)".into(),
             )),
         }
     }
@@ -271,7 +271,7 @@ fn append_known_host(host: &str, port: u16, key: &ssh_key::PublicKey) -> std::io
     use std::io::Write;
 
     let path = known_hosts_path().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "kein Home-Verzeichnis")
+        std::io::Error::new(std::io::ErrorKind::NotFound, "no home directory")
     })?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;

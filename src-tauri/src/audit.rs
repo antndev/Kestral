@@ -44,7 +44,7 @@ impl AuditLog {
             Ok(r) => r,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
             Err(e) => {
-                tracing::error!("Audit-Log nicht lesbar: {e}");
+                tracing::error!("Audit log not readable: {e}");
                 return;
             }
         };
@@ -65,7 +65,7 @@ impl AuditLog {
             }
         }
         if broken > 0 {
-            tracing::warn!("{broken} Audit-Zeilen konnten nicht gelesen werden");
+            tracing::warn!("{broken} audit lines could not be read");
         }
 
         let total = out.len();
@@ -143,10 +143,10 @@ impl AuditLog {
             Ok(mut f) => {
                 let _ = crate::util::restrict(&f);
                 if let Err(e) = f.write_all(line.as_bytes()) {
-                    tracing::error!("Audit-Eintrag nicht geschrieben: {e}");
+                    tracing::error!("Audit entry not written: {e}");
                 }
             }
-            Err(e) => tracing::error!("Audit-Log nicht zu oeffnen: {e}"),
+            Err(e) => tracing::error!("Audit log could not be opened: {e}"),
         }
     }
 
@@ -160,7 +160,7 @@ impl AuditLog {
                 Some(format!("{compact}\n"))
             }
             Err(e) => {
-                tracing::warn!("Audit-Eintrag nicht verschluesselbar ({e}), nur im Speicher");
+                tracing::warn!("Audit entry could not be encrypted ({e}), kept in memory only");
                 None
             }
         }
@@ -175,7 +175,7 @@ impl AuditLog {
             }
         }
         if let Err(e) = crate::util::atomic_write(&self.path, buf.as_bytes()) {
-            tracing::error!("Audit-Log kuerzen fehlgeschlagen: {e}");
+            tracing::error!("Compacting the audit log failed: {e}");
         } else {
             tracing::info!("Audit-Log auf {} Eintraege gekuerzt", entries.len());
         }
@@ -223,7 +223,7 @@ mod tests {
         vault.change_master("pw", "neu").unwrap();
         let third = AuditLog::new(log_path.clone(), vault.clone());
         third.load();
-        assert_eq!(third.list().len(), 2, "ueberlebt den Passwortwechsel");
+        assert_eq!(third.list().len(), 2, "survives the password change");
 
         third.clear();
         assert!(third.list().is_empty());

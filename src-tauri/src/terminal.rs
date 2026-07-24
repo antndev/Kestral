@@ -106,7 +106,7 @@ pub async fn ssh_open_shell(
     let channel = match session.channel_open_session().await {
         Ok(c) => c,
         Err(e) => {
-            let err = AppError::Ssh(format!("Kanal: {e}"));
+            let err = AppError::Ssh(format!("Channel: {e}"));
             notify("error", &err.to_string());
             return Err(err);
         }

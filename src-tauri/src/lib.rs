@@ -40,14 +40,14 @@ fn kestral_data_dir() -> std::path::PathBuf {
     if !dir.exists() && old.exists() {
         match std::fs::rename(&old, &dir) {
             Ok(()) => tracing::info!(
-                "Datenordner von {} nach {} migriert",
+                "Data directory migrated from {} to {}",
                 old.display(),
                 dir.display()
             ),
             Err(e) => {
                 tracing::error!(
-                    "Datenordner {} konnte nicht nach {} umbenannt werden: {e}. \
-                     Nutze weiterhin den alten Ordner.",
+                    "Data directory {} could not be renamed to {}: {e}. \
+                     Keeping the old directory.",
                     old.display(),
                     dir.display()
                 );
@@ -125,7 +125,7 @@ pub fn run() {
             let reset_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = mcp::serve(mcp_handle, services_for_mcp, bearer_for_mcp, MCP_PORT, ct).await {
-                    tracing::error!("MCP-Server gestoppt: {e}");
+                    tracing::error!("MCP server stopped: {e}");
                 }
                 if let Some(state) = reset_handle.try_state::<AppState>() {
                     if let Ok(mut info) = state.mcp.lock() {

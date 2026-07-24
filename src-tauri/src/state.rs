@@ -108,7 +108,7 @@ impl Services {
                         "denied",
                         None,
                         false,
-                        Some("vom nutzer abgelehnt".to_string()),
+                        Some("declined by the user".to_string()),
                     );
                     return Err(AppError::ApprovalDenied);
                 }
@@ -127,8 +127,8 @@ impl Services {
 
     fn record_denied(&self, host_id: &str, host_name: &str, command: &str, reason: DeniedReason) {
         let text = match reason {
-            DeniedReason::HostLocked => "host gesperrt",
-            DeniedReason::AiInactive => "ki aus",
+            DeniedReason::HostLocked => "host locked",
+            DeniedReason::AiInactive => "AI off",
         };
         self.audit.record(
             host_id.to_string(),
@@ -154,7 +154,7 @@ impl Services {
                 let detail = out
                     .exit_signal
                     .as_ref()
-                    .map(|s| format!("beendet durch Signal {s}"));
+                    .map(|s| format!("terminated by signal {s}"));
                 self.audit.record(
                     host.id.to_string(),
                     host.name.clone(),
@@ -199,7 +199,7 @@ impl Services {
                         "denied",
                         None,
                         false,
-                        Some("vom nutzer abgelehnt".to_string()),
+                        Some("declined by the user".to_string()),
                     );
                     return Err(AppError::ApprovalDenied);
                 }

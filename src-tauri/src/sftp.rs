@@ -48,7 +48,7 @@ async fn open_subsystem(session: &client::Handle<ClientHandler>) -> Result<SftpS
     let channel = session
         .channel_open_session()
         .await
-        .map_err(|e| ferr("Kanal", e))?;
+        .map_err(|e| ferr("channel", e))?;
     channel
         .request_subsystem(true, "sftp")
         .await

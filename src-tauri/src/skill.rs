@@ -96,8 +96,8 @@ pub struct InstallResult {
 pub fn install() -> Result<InstallResult> {
     let python = find_python().ok_or_else(|| {
         AppError::Other(
-            "Kein Python gefunden. Installiere Python 3 oder nutze weiterhin die \
-             MCP-Registrierung."
+            "No Python found. Install Python 3 or keep using the \
+             MCP registration."
                 .into(),
         )
     })?;
@@ -146,7 +146,7 @@ fn home() -> Result<PathBuf> {
     std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
-        .ok_or_else(|| AppError::Other("kein Home-Verzeichnis gefunden".into()))
+        .ok_or_else(|| AppError::Other("no home directory found".into()))
 }
 
 fn find_python() -> Option<String> {

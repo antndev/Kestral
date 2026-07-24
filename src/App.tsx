@@ -511,6 +511,7 @@ function ConnTab({
       draggable
       onDragStart={(e) => {
         e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", label);
         onDragStartTab();
       }}
       onDragEnd={() => setOver(false)}

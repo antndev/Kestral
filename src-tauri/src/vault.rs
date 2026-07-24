@@ -478,8 +478,8 @@ pub fn load_or_create_token(path: &std::path::Path) -> String {
     let token = random_token();
     if let Err(e) = crate::util::write_private(path, token.as_bytes()) {
         tracing::error!(
-            "MCP-Token konnte nicht unter {} gespeichert werden: {e}. Die einmalige \
-             `claude mcp add`-Registrierung bleibt nach einem Neustart nicht gueltig.",
+            "MCP token could not be saved at {}: {e}. The one-time \
+             `claude mcp add` registration will not survive a restart.",
             path.display()
         );
     }
@@ -555,7 +555,7 @@ mod tests {
         v.lock();
         v.unlock("zweites-pw").unwrap();
         let (plain, _) = v.open_envelope(&env).unwrap();
-        assert_eq!(plain.to_vec(), msg.to_vec(), "nach Neustart weiterhin lesbar");
+        assert_eq!(plain.to_vec(), msg.to_vec(), "still readable after restart");
 
         let env2 = v.seal_envelope(b"zweiter inhalt").unwrap();
         assert_eq!(v.open_envelope(&env2).unwrap().0.to_vec(), b"zweiter inhalt".to_vec());

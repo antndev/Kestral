@@ -2,13 +2,13 @@
 title Kestral Dev
 cd /d "%~dp0"
 echo ============================================
-echo   Starte Kestral (Dev)
-echo   Dieses Fenster offen lassen.
-echo   Zum Stoppen: Fenster schliessen oder Strg+C,
-echo   oder spaeter stop.bat ausfuehren.
+echo   Starting Kestral (dev)
+echo   Keep this window open.
+echo   To stop: close the window or press Ctrl+C,
+echo   or run stop.bat later.
 echo ============================================
 echo.
 call npm run tauri dev
 echo.
-echo Kestral wurde beendet.
+echo Kestral stopped.
 pause

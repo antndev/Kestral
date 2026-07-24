@@ -63,7 +63,7 @@ impl HostStore {
             let bak = self.path.with_extension("json.migrated.bak");
             let _ = std::fs::rename(&self.path, &bak);
             tracing::info!(
-                "hosts in den Tresor uebernommen, alte Datei liegt als {}",
+                "hosts migrated into the vault, old file kept as {}",
                 bak.display()
             );
         }
@@ -79,7 +79,7 @@ impl HostStore {
                     *self.warning.lock().unwrap() = Some(format!(
                         "Hosts could not be decrypted ({e}). The old file is left untouched."
                     ));
-                    tracing::error!("hosts nicht entschluesselbar ({e}), starte leer");
+                    tracing::error!("hosts could not be decrypted ({e}), starting empty");
                     Ok(Vec::new())
                 }
             },
@@ -201,7 +201,7 @@ mod tests {
         store.load().unwrap();
         assert_eq!(store.list().len(), 1);
         assert_eq!(store.list()[0].name, "h1");
-        assert!(!hosts_path.exists(), "alte Datei ist umbenannt");
+        assert!(!hosts_path.exists(), "old file was renamed");
         assert!(
             hosts_path.with_extension("json.migrated.bak").exists(),
             "als Backup erhalten"
@@ -219,7 +219,7 @@ mod tests {
         assert_eq!(store.list()[0].ai_policy, crate::model::AiPolicy::Free);
 
         vault.lock();
-        assert!(store.load().is_err(), "ohne Schluessel kein Lesen");
+        assert!(store.load().is_err(), "no read without the key");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -246,7 +246,7 @@ mod tests {
         };
 
         store.add(mk("prod")).unwrap();
-        assert!(store.add(mk("PROD")).is_err(), "kein zweiter gleicher Name");
+        assert!(store.add(mk("PROD")).is_err(), "no second identical name");
         assert_eq!(store.list().len(), 1);
 
         let _ = std::fs::remove_dir_all(&dir);

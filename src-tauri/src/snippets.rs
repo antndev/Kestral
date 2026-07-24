@@ -55,7 +55,7 @@ impl SnippetStore {
             let bak = self.path.with_extension("json.migrated.bak");
             let _ = std::fs::rename(&self.path, &bak);
             tracing::info!(
-                "snippets in den Tresor uebernommen, alte Datei liegt als {}",
+                "snippets migrated into the vault, old file kept as {}",
                 bak.display()
             );
         }
@@ -71,7 +71,7 @@ impl SnippetStore {
                     *self.warning.lock().unwrap() = Some(format!(
                         "Scripts could not be decrypted ({e}). The old file is left untouched."
                     ));
-                    tracing::error!("items nicht entschluesselbar ({e}), starte leer");
+                    tracing::error!("items could not be decrypted ({e}), starting empty");
                     Ok(Vec::new())
                 }
             },

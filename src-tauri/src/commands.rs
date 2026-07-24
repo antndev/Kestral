@@ -37,10 +37,10 @@ pub async fn vault_create(state: State<'_, AppState>, master: String) -> Result<
     tokio::task::spawn_blocking(move || -> Result<()> {
         vault.create(master.as_str())?;
         if let Err(e) = hosts.load() {
-            tracing::error!("Hosts nach Vault-Erstellung laden fehlgeschlagen: {e}");
+            tracing::error!("Loading hosts after vault creation failed: {e}");
         }
         if let Err(e) = snippets.load() {
-            tracing::error!("Snippets nach Vault-Erstellung laden fehlgeschlagen: {e}");
+            tracing::error!("Loading snippets after vault creation failed: {e}");
         }
         Ok(())
     })
@@ -58,10 +58,10 @@ pub async fn vault_unlock(state: State<'_, AppState>, master: String) -> Result<
     tokio::task::spawn_blocking(move || -> Result<()> {
         vault.unlock(master.as_str())?;
         if let Err(e) = hosts.load() {
-            tracing::error!("Hosts nach Entsperren laden fehlgeschlagen: {e}");
+            tracing::error!("Loading hosts after unlock failed: {e}");
         }
         if let Err(e) = snippets.load() {
-            tracing::error!("Snippets nach Entsperren laden fehlgeschlagen: {e}");
+            tracing::error!("Loading snippets after unlock failed: {e}");
         }
         audit.load();
         Ok(())
@@ -121,7 +121,7 @@ pub struct PubkeyInfo {
 pub async fn derive_pubkey(private_key: String) -> Result<PubkeyInfo> {
     let pk = Zeroizing::new(private_key);
     let key = russh::keys::decode_secret_key(pk.as_str(), None)
-        .map_err(|e| AppError::Ssh(format!("Schluessel laden: {e}")))?;
+        .map_err(|e| AppError::Ssh(format!("Load key: {e}")))?;
     let public = key.public_key();
     let public_key = public
         .to_openssh()
@@ -158,11 +158,11 @@ pub async fn generate_key(algorithm: Option<String>, comment: Option<String>) ->
         KeypairData::Ed25519(Ed25519Keypair::from_seed(&seed)),
         comment.unwrap_or_default(),
     )
-    .map_err(|e| AppError::Ssh(format!("Key erzeugen: {e}")))?;
+    .map_err(|e| AppError::Ssh(format!("Generate key: {e}")))?;
 
     let pem = key
         .to_openssh(LineEnding::LF)
-        .map_err(|e| AppError::Ssh(format!("Key kodieren: {e}")))?;
+        .map_err(|e| AppError::Ssh(format!("Encode key: {e}")))?;
     Ok(pem.to_string())
 }
 
@@ -516,9 +516,9 @@ fn run_claude(args: &[&str]) -> std::result::Result<String, String> {
     }
     let out = cmd.args(args).output().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
-            "Die Claude-CLI wurde nicht gefunden. Ist `claude` installiert und im PATH?".to_string()
+            "The Claude CLI was not found. Is `claude` installed and on PATH?".to_string()
         } else {
-            format!("Claude-CLI konnte nicht gestartet werden: {e}")
+            format!("The Claude CLI could not be started: {e}")
         }
     })?;
     if out.status.success() {
@@ -573,7 +573,7 @@ fn sftp_handle(
 ) -> Result<Arc<crate::sftp::SftpHandle>> {
     sessions
         .get(id)
-        .ok_or_else(|| AppError::Other("SFTP-Sitzung nicht gefunden".into()))
+        .ok_or_else(|| AppError::Other("SFTP session not found".into()))
 }
 
 #[tauri::command]
