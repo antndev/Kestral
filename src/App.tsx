@@ -911,6 +911,7 @@ function pasteClean(
 
 function CopyButton({ text, label, className }: { text: string; label: string; className?: string }) {
   const [done, setDone] = useState(false);
+  const [used, setUsed] = useState(false);
   return (
     <Button
       type="button"
@@ -923,6 +924,7 @@ function CopyButton({ text, label, className }: { text: string; label: string; c
         e.stopPropagation();
         try {
           await clipWriteText(text);
+          setUsed(true);
           setDone(true);
           setTimeout(() => setDone(false), 1500);
         } catch {
@@ -932,7 +934,7 @@ function CopyButton({ text, label, className }: { text: string; label: string; c
       {done ? (
         <Check className="size-3.5 text-success animate-in zoom-in-50 fade-in duration-200" />
       ) : (
-        <Copy className="size-3.5" />
+        <Copy className={"size-3.5 " + (used ? "animate-in fade-in zoom-in-75 duration-200" : "")} />
       )}
     </Button>
   );
@@ -2103,7 +2105,7 @@ function McpView() {
   const [connectMsg, setConnectMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [installing, setInstalling] = useState(false);
   const [installMsg, setInstallMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const [skillOk, setSkillOk] = useState(false);
+  const [skillOk, setSkillOk] = useState<boolean | null>(null);
   const [regs, setRegs] = useState<api.Registration[] | null>(null);
 
   const refresh = useCallback(async () => {
@@ -2284,7 +2286,7 @@ function McpView() {
                       (skillOk ? "bg-success/15 text-success" : "bg-muted text-muted-foreground")
                     }
                   >
-                    {skillOk ? "installed" : "not installed"}
+                    {skillOk === null ? "checking…" : skillOk ? "installed" : "not installed"}
                   </span>
                 </div>
                 <p className="text-sm text-muted-foreground">
@@ -2293,16 +2295,22 @@ function McpView() {
                 </p>
               </div>
               <div className="flex w-48 shrink-0 justify-end">
-                <Button
-                  size="sm"
-                  className="w-full"
-                  variant={skillOk ? "secondary" : "default"}
-                  onClick={skillOk ? removeSkill : installSkillFiles}
-                  disabled={installing}
-                >
-                  {installing && <Spinner className="size-4" />}
-                  {skillOk ? "Remove" : "Install"}
-                </Button>
+                {skillOk === null ? (
+                  <Button size="sm" className="w-full" variant="secondary" disabled>
+                    <Spinner className="size-4" />Checking…
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    className="w-full"
+                    variant={skillOk ? "secondary" : "default"}
+                    onClick={skillOk ? removeSkill : installSkillFiles}
+                    disabled={installing}
+                  >
+                    {installing && <Spinner className="size-4" />}
+                    {skillOk ? "Remove" : "Install"}
+                  </Button>
+                )}
               </div>
             </div>
             {installMsg && (
@@ -2327,7 +2335,11 @@ function McpView() {
                 </p>
               </div>
               <div className="flex w-48 shrink-0 justify-end">
-                {mcpReg && mcpReg.connected ? (
+                {regs === null ? (
+                  <Button size="sm" className="w-full" variant="secondary" disabled>
+                    <Spinner className="size-4" />Checking…
+                  </Button>
+                ) : mcpReg && mcpReg.connected ? (
                   <Button
                     size="sm"
                     className="w-full"
