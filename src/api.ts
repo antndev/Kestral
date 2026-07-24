@@ -104,6 +104,10 @@ export const secretPut = (id: string, kind: SecretKind, value: string) =>
   invoke<void>("secret_put", { id, kind, value });
 export const secretList = () => invoke<SecretMeta[]>("secret_list");
 export const secretDelete = (id: string) => invoke<void>("secret_delete", { id });
+export const secretReveal = (id: string) => invoke<string>("secret_reveal", { id });
+export type KeyAlgorithm = "ed25519" | "ecdsa" | "rsa";
+export const generateKey = (algorithm: KeyAlgorithm, comment?: string) =>
+  invoke<string>("generate_key", { algorithm, comment });
 
 export interface PubkeyInfo {
   public_key: string;

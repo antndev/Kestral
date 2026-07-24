@@ -145,6 +145,8 @@ pub fn run() {
             commands::secret_put,
             commands::secret_list,
             commands::secret_delete,
+            commands::secret_reveal,
+            commands::generate_key,
             commands::derive_pubkey,
             commands::drag_icon_path,
             commands::host_list,

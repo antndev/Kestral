@@ -22,6 +22,8 @@ import {
   Import,
   Play,
   X,
+  Eye,
+  Wand2,
 } from "lucide-react";
 import { readText as clipReadText, writeText as clipWriteText } from "@tauri-apps/plugin-clipboard-manager";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -407,7 +409,7 @@ function Shell({ onLock }: { onLock: () => void }) {
       )}
 
       {approvals[0] && <ApprovalModal req={approvals[0]} onAnswer={answerApproval} />}
-      <ConnectPalette open={paletteOpen} onOpenChange={setPaletteOpen} onConnect={openSession} />
+      <ConnectPalette open={paletteOpen} onOpenChange={setPaletteOpen} onConnect={openSession} onConnectSftp={openSftp} />
 
       <aside className="w-48 shrink-0 flex flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
         <nav className="flex-1 overflow-y-auto px-2 pb-2 pt-1 flex flex-col gap-0.5">
@@ -583,10 +585,12 @@ function ConnectPalette({
   open,
   onOpenChange,
   onConnect,
+  onConnectSftp,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   onConnect: (h: Host) => void;
+  onConnectSftp: (h: Host) => void;
 }) {
   const [hosts, setHosts] = useState<Host[]>([]);
   useEffect(() => {
@@ -595,7 +599,7 @@ function ConnectPalette({
 
   return (
     <CommandDialog open={open} onOpenChange={onOpenChange}>
-      <CommandInput placeholder="Search a host to connect…" />
+      <CommandInput placeholder="Search a host — Enter opens a terminal, the folder icon opens files…" />
       <CommandList>
         <CommandEmpty>No hosts found.</CommandEmpty>
         {hosts.map((h) => (
@@ -607,13 +611,27 @@ function ConnectPalette({
               onOpenChange(false);
             }}
           >
-            <Server className="size-4 text-muted-foreground" />
-            <span className="flex flex-col">
-              <span>{h.name}</span>
-              <span className="text-xs text-muted-foreground">
+            <TerminalSquare className="size-4 text-muted-foreground" />
+            <span className="flex flex-col min-w-0 flex-1">
+              <span className="truncate">{h.name}</span>
+              <span className="text-xs text-muted-foreground truncate">
                 {h.username}@{h.hostname}:{h.port}
               </span>
             </span>
+            <button
+              type="button"
+              className="ml-auto shrink-0 rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+              title="Open files (SFTP)"
+              aria-label={`Open files on ${h.name}`}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onConnectSftp(h);
+                onOpenChange(false);
+              }}
+            >
+              <Folder className="size-4" />
+            </button>
           </CommandItem>
         ))}
       </CommandList>
@@ -869,6 +887,41 @@ function LabeledField({ label, children }: { label: string; children: ReactNode 
   );
 }
 
+function CopyButton({ text, label }: { text: string; label: string }) {
+  const [done, setDone] = useState(false);
+  return (
+    <Button
+      type="button"
+      size="icon-xs"
+      variant="ghost"
+      className="shrink-0"
+      aria-label={label}
+      title={label}
+      onClick={async (e) => {
+        e.stopPropagation();
+        try {
+          await clipWriteText(text);
+          setDone(true);
+          setTimeout(() => setDone(false), 1500);
+        } catch {
+        }
+      }}
+    >
+      {done ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
+    </Button>
+  );
+}
+
+function sshKeyType(publicKey: string): string {
+  const t = (publicKey.trim().split(/\s+/)[0] || "").toLowerCase();
+  if (t === "ssh-ed25519") return "Ed25519";
+  if (t === "sk-ssh-ed25519@openssh.com") return "Ed25519 (FIDO)";
+  if (t === "ssh-rsa") return "RSA";
+  if (t === "ssh-dss") return "DSA";
+  if (t.startsWith("ecdsa-sha2-")) return "ECDSA " + t.replace("ecdsa-sha2-nistp", "P-");
+  return t || "Key";
+}
+
 function SecretValueField({
   isKey,
   value,
@@ -879,7 +932,6 @@ function SecretValueField({
   onChange: (v: string) => void;
 }) {
   const [derived, setDerived] = useState<{ public_key: string; fingerprint: string } | null>(null);
-  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     if (!isKey || !value.includes("PRIVATE KEY")) {
@@ -903,15 +955,6 @@ function SecretValueField({
     try {
       const t = await clipReadText();
       if (t) onChange(t);
-    } catch {
-    }
-  }
-  async function copyPub() {
-    if (!derived) return;
-    try {
-      await clipWriteText(derived.public_key);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
     } catch {
     }
   }
@@ -945,15 +988,18 @@ function SecretValueField({
       {derived && (
         <div className="flex flex-col gap-2 rounded-md border bg-muted/30 p-2.5 text-xs animate-in fade-in-0 duration-150">
           <div className="flex items-center gap-2 min-w-0">
+            <span className="text-muted-foreground shrink-0 w-20">Type</span>
+            <span className="font-medium">{sshKeyType(derived.public_key)}</span>
+          </div>
+          <div className="flex items-center gap-2 min-w-0">
             <span className="text-muted-foreground shrink-0 w-20">Fingerprint</span>
-            <span className="font-mono truncate" title={derived.fingerprint}>{derived.fingerprint}</span>
+            <span className="font-mono truncate flex-1" title={derived.fingerprint}>{derived.fingerprint}</span>
+            <CopyButton text={derived.fingerprint} label="Copy fingerprint" />
           </div>
           <div className="flex items-start gap-2 min-w-0">
             <span className="text-muted-foreground shrink-0 w-20 mt-0.5">Public key</span>
             <span className="font-mono break-all flex-1 text-muted-foreground">{derived.public_key}</span>
-            <Button type="button" size="icon-xs" variant="ghost" className="shrink-0" onClick={copyPub} aria-label="Copy public key">
-              {copied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
-            </Button>
+            <CopyButton text={derived.public_key} label="Copy public key" />
           </div>
         </div>
       )}
@@ -1211,6 +1257,7 @@ function KeychainView() {
   const [adding, setAdding] = useState(false);
   const [importing, setImporting] = useState(false);
   const [toDelete, setToDelete] = useState<SecretMeta | null>(null);
+  const [toReveal, setToReveal] = useState<SecretMeta | null>(null);
   const refresh = useCallback(async () => setSecrets(await api.secretList()), []);
   useEffect(() => {
     refresh();
@@ -1256,18 +1303,30 @@ function KeychainView() {
                   <div className="font-medium text-sm truncate">{s.id}</div>
                   <div className="text-xs text-muted-foreground">{isKey ? "Private key" : "Password"}</div>
                 </div>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setToDelete(s);
-                  }}
-                  aria-label="Delete credential"
-                >
-                  <Trash2 className="size-4" />
-                </Button>
+                <div className="flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setToReveal(s);
+                    }}
+                    aria-label="Reveal credential"
+                  >
+                    <Eye className="size-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setToDelete(s);
+                    }}
+                    aria-label="Delete credential"
+                  >
+                    <Trash2 className="size-4" />
+                  </Button>
+                </div>
               </div>
             );
           })}
@@ -1276,6 +1335,7 @@ function KeychainView() {
 
       {adding && <KeychainSheet onClose={() => setAdding(false)} onSaved={refresh} />}
       {importing && <ImportVaultSheet onClose={() => setImporting(false)} onSaved={refresh} />}
+      {toReveal && <RevealSecretSheet secret={toReveal} onClose={() => setToReveal(null)} />}
 
       {toDelete && (
         <ConfirmDialog
@@ -1296,17 +1356,135 @@ function KeychainView() {
   );
 }
 
+function RevealSecretSheet({ secret, onClose }: { secret: SecretMeta; onClose: () => void }) {
+  const [open, setOpen] = useState(true);
+  const [value, setValue] = useState<string | null>(null);
+  const [err, setErr] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [pub, setPub] = useState<{ public_key: string; fingerprint: string } | null>(null);
+  const isKey = secret.kind === "private_key";
+  const close = () => {
+    setOpen(false);
+    setTimeout(onClose, 220);
+  };
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .secretReveal(secret.id)
+      .then((v) => {
+        if (!alive) return;
+        setValue(v);
+        if (isKey && v.includes("PRIVATE KEY")) {
+          api.derivePubkey(v).then((i) => alive && setPub(i)).catch(() => {});
+        }
+      })
+      .catch((e) => alive && setErr(errText(e)));
+    return () => {
+      alive = false;
+    };
+  }, [secret.id, isKey]);
+
+  async function copy() {
+    if (value == null) return;
+    try {
+      await clipWriteText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+    }
+  }
+
+  return (
+    <Sheet open={open} onOpenChange={(o) => !o && close()}>
+      <SheetContent
+        side="right"
+        style={{ top: "2.75rem", bottom: "auto", height: "calc(100svh - 2.75rem)" }}
+        className="w-[420px] sm:max-w-[420px] flex flex-col gap-0 p-0"
+      >
+        <SheetHeader>
+          <SheetTitle className="truncate">{secret.id}</SheetTitle>
+          <SheetDescription>
+            {isKey ? "Private key" : "Password"}, decrypted from the vault.
+          </SheetDescription>
+        </SheetHeader>
+        <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-4">
+          {err ? (
+            <p className="text-destructive text-sm">{err}</p>
+          ) : value == null ? (
+            <p className="text-muted-foreground text-sm">Decrypting…</p>
+          ) : (
+            <>
+              <LabeledField label={isKey ? "Private key" : "Password"}>
+                <div className="relative">
+                  <div
+                    data-selectable
+                    className="w-full rounded-md border bg-muted/30 px-3 py-2 pr-9 text-xs font-mono leading-relaxed break-all whitespace-pre-wrap max-h-72 overflow-y-auto select-text"
+                  >
+                    {value}
+                  </div>
+                  <Button
+                    type="button"
+                    size="icon-xs"
+                    variant="ghost"
+                    className="absolute top-1.5 right-1.5"
+                    onClick={copy}
+                    aria-label="Copy value"
+                  >
+                    {copied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
+                  </Button>
+                </div>
+              </LabeledField>
+              {pub && (
+                <div className="flex flex-col gap-2 rounded-md border bg-muted/30 p-2.5 text-xs">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-muted-foreground shrink-0 w-20">Type</span>
+                    <span className="font-medium">{sshKeyType(pub.public_key)}</span>
+                  </div>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-muted-foreground shrink-0 w-20">Fingerprint</span>
+                    <span className="font-mono truncate flex-1" title={pub.fingerprint}>{pub.fingerprint}</span>
+                    <CopyButton text={pub.fingerprint} label="Copy fingerprint" />
+                  </div>
+                  <div className="flex items-start gap-2 min-w-0">
+                    <span className="text-muted-foreground shrink-0 w-20 mt-0.5">Public key</span>
+                    <span className="font-mono break-all flex-1 text-muted-foreground">{pub.public_key}</span>
+                    <CopyButton text={pub.public_key} label="Copy public key" />
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
 function KeychainSheet({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
   const [id, setId] = useState("");
   const [kind, setKind] = useState<SecretKind>("password");
   const [value, setValue] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [generating, setGenerating] = useState(false);
   const [open, setOpen] = useState(true);
   const close = () => {
     setOpen(false);
     setTimeout(onClose, 220);
   };
+
+  async function generate() {
+    setErr("");
+    setGenerating(true);
+    try {
+      setValue(await api.generateKey("ed25519", id || undefined));
+    } catch (e) {
+      setErr(errText(e));
+    } finally {
+      setGenerating(false);
+    }
+  }
 
   async function save() {
     setErr("");
@@ -1350,6 +1528,18 @@ function KeychainSheet({ onClose, onSaved }: { onClose: () => void; onSaved: () 
           </LabeledField>
           <LabeledField label="Value (encrypted)">
             <SecretValueField isKey={kind === "private_key"} value={value} onChange={setValue} />
+            {kind === "private_key" && !value && (
+              <div className="mt-1.5 flex items-center justify-between gap-2">
+                <span className="text-xs text-muted-foreground">
+                  No key yet? <span className="text-foreground">Ed25519</span>
+                  <span className="ml-1 rounded bg-success/15 px-1.5 py-0.5 text-[10px] text-success">Recommended</span>
+                </span>
+                <Button type="button" size="xs" variant="secondary" onClick={generate} disabled={generating}>
+                  {generating ? <Spinner className="size-3.5" /> : <Wand2 className="size-3.5" />}
+                  Generate
+                </Button>
+              </div>
+            )}
           </LabeledField>
           {err && <p className="text-destructive text-sm">{err}</p>}
         </div>
@@ -1812,11 +2002,19 @@ function RunResultBlock({ result }: { result: RunResult }) {
   );
 }
 
-function decisionVariant(d: string): "success" | "destructive" | "info" | "secondary" {
-  if (d === "denied" || d === "error") return "destructive";
-  if (d === "user") return "info";
-  if (d === "allowed" || d === "approved") return "success";
-  return "secondary";
+function aiDecisionLabel(d: string): string {
+  switch (d) {
+    case "allowed":
+      return "auto";
+    case "approved":
+      return "you approved";
+    case "denied":
+      return "refused";
+    case "config":
+      return "config change";
+    default:
+      return d;
+  }
 }
 
 function LogsView() {
@@ -1830,7 +2028,7 @@ function LogsView() {
 
   return (
     <div className="px-6 pt-5 pb-12 flex flex-col gap-5">
-      <PageHeader title="Logs" subtitle="Every command you run and every AI action, with the result." />
+      <PageHeader title="Logs" subtitle="What you ran and what the AI did, side by side, with the result." />
 
       {entries.length === 0 ? (
         <EmptyState icon={<ScrollText className="size-6" />} title="No activity yet" hint="Commands you run and AI actions appear here." />
@@ -1840,9 +2038,9 @@ function LogsView() {
             <TableHeader>
               <TableRow>
                 <TableHead className="w-24">Time</TableHead>
-                <TableHead className="w-44">Host</TableHead>
+                <TableHead className="w-36">By</TableHead>
+                <TableHead className="w-40">Host</TableHead>
                 <TableHead>Command</TableHead>
-                <TableHead className="w-24">Source</TableHead>
                 <TableHead className="w-28">Result</TableHead>
               </TableRow>
             </TableHeader>
@@ -1853,14 +2051,29 @@ function LogsView() {
                 .map((e) => (
                   <TableRow key={e.id}>
                     <TableCell className="text-muted-foreground tabular-nums">{new Date(e.timestamp).toLocaleTimeString()}</TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-1.5 whitespace-nowrap">
+                        {e.decision === "user" ? (
+                          <Badge variant="info">You</Badge>
+                        ) : (
+                          <>
+                            <Badge variant="warning">AI</Badge>
+                            <span className="text-xs text-muted-foreground">{aiDecisionLabel(e.decision)}</span>
+                          </>
+                        )}
+                      </div>
+                    </TableCell>
                     <TableCell className="truncate">{e.host_name}</TableCell>
                     <TableCell className="font-mono text-xs">{e.command}</TableCell>
-                    <TableCell><Badge variant={decisionVariant(e.decision)}>{e.decision}</Badge></TableCell>
                     <TableCell>
-                      <Badge variant={e.success ? "success" : "destructive"}>
-                        {e.success ? "ok" : "error"}
-                        {e.exit_status != null ? ` (${e.exit_status})` : ""}
-                      </Badge>
+                      {e.decision === "denied" ? (
+                        <Badge variant="secondary">refused</Badge>
+                      ) : (
+                        <Badge variant={e.success ? "success" : "destructive"}>
+                          {e.success ? "ok" : "error"}
+                          {e.exit_status != null ? ` (${e.exit_status})` : ""}
+                        </Badge>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))}
@@ -2075,7 +2288,7 @@ function McpView() {
                 <Button
                   size="sm"
                   className="w-full"
-                  variant={skillOk ? "outline" : "default"}
+                  variant={skillOk ? "secondary" : "default"}
                   onClick={skillOk ? removeSkill : installSkillFiles}
                   disabled={installing}
                 >
@@ -2110,7 +2323,7 @@ function McpView() {
                   <Button
                     size="sm"
                     className="w-full"
-                    variant="outline"
+                    variant="secondary"
                     onClick={rotateToken}
                     disabled={rotating}
                   >

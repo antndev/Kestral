@@ -151,6 +151,37 @@ pub async fn derive_pubkey(private_key: String) -> Result<PubkeyInfo> {
 }
 
 #[tauri::command]
+pub async fn secret_reveal(state: State<'_, AppState>, id: String) -> Result<String> {
+    let bytes = state.services.vault.get_secret(&id)?;
+    String::from_utf8(bytes.to_vec())
+        .map_err(|_| AppError::Other("This credential is not valid UTF-8 text".into()))
+}
+
+#[tauri::command]
+pub async fn generate_key(algorithm: Option<String>, comment: Option<String>) -> Result<String> {
+    use rand::RngCore;
+    use russh::keys::ssh_key::private::{Ed25519Keypair, KeypairData, PrivateKey};
+    use russh::keys::ssh_key::LineEnding;
+
+    match algorithm.as_deref().unwrap_or("ed25519") {
+        "ed25519" => {}
+        other => return Err(AppError::Ssh(format!("Unsupported key type: {other}"))),
+    }
+    let mut seed = Zeroizing::new([0u8; 32]);
+    rand::rngs::OsRng.fill_bytes(seed.as_mut_slice());
+    let key = PrivateKey::new(
+        KeypairData::Ed25519(Ed25519Keypair::from_seed(&seed)),
+        comment.unwrap_or_default(),
+    )
+    .map_err(|e| AppError::Ssh(format!("Key erzeugen: {e}")))?;
+
+    let pem = key
+        .to_openssh(LineEnding::LF)
+        .map_err(|e| AppError::Ssh(format!("Key kodieren: {e}")))?;
+    Ok(pem.to_string())
+}
+
+#[tauri::command]
 pub fn drag_icon_path() -> std::result::Result<String, String> {
     let path = std::env::temp_dir().join("kestral-drag-icon.png");
     if !path.exists() {
