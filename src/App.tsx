@@ -324,8 +324,9 @@ function Shell({ onLock }: { onLock: () => void }) {
       if (cancelled) return;
       try {
         await api.aiEnable(aiMinutes);
+        if (!cancelled) setAiActive(true);
       } catch {
-        if (!cancelled && attempt < 3) setTimeout(() => enable(attempt + 1), 700);
+        if (!cancelled && attempt < 4) setTimeout(() => enable(attempt + 1), 700);
       }
     };
     enable(0);
@@ -2735,7 +2736,7 @@ function UpdateCard() {
     setState({ kind: "checking" });
     const started = Date.now();
     const settle = async () => {
-      const wait = 1100 - (Date.now() - started);
+      const wait = 1500 - (Date.now() - started);
       if (wait > 0) await new Promise((r) => setTimeout(r, wait));
     };
     try {
@@ -2774,8 +2775,8 @@ function UpdateCard() {
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         <div className="flex items-center justify-between gap-4">
-          <p key={state.kind} className="text-sm text-muted-foreground animate-in fade-in-0 duration-300">
-            {state.kind === "checking" && "Checking for updates…"}
+          <p key={state.kind} className="text-sm text-muted-foreground animate-in fade-in-0 duration-500">
+            {state.kind === "checking" && ""}
             {state.kind === "current" && "You are on the latest version."}
             {state.kind === "available" && `Version ${state.version} is available.`}
             {state.kind === "downloading" && `Downloading… ${state.pct}%`}
@@ -2797,12 +2798,18 @@ function UpdateCard() {
               <Button
                 size="sm"
                 variant="secondary"
-                className="w-full"
+                className="w-full transition-all"
                 onClick={check}
                 disabled={state.kind === "checking"}
               >
-                {state.kind === "checking" && <Spinner className="size-4" />}
-                Check for updates
+                {state.kind === "checking" ? (
+                  <>
+                    <Spinner className="size-4" />
+                    <span className="animate-in fade-in-0 duration-500">Checking…</span>
+                  </>
+                ) : (
+                  "Check for updates"
+                )}
               </Button>
             )}
           </div>
