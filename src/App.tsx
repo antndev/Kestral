@@ -263,6 +263,8 @@ function Shell({ onLock }: { onLock: () => void }) {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [locking, setLocking] = useState(false);
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+  const [updateNotes, setUpdateNotes] = useState<string>("");
+  const [updateOpen, setUpdateOpen] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -270,7 +272,12 @@ function Shell({ onLock }: { onLock: () => void }) {
       try {
         const { check } = await import("@tauri-apps/plugin-updater");
         const u = await check();
-        if (alive && u) setUpdateVersion(u.version);
+        if (alive && u) {
+          (window as unknown as { __kestralUpdate?: unknown }).__kestralUpdate = u;
+          setUpdateVersion(u.version);
+          setUpdateNotes(u.body || "");
+          setUpdateOpen(true);
+        }
       } catch {
       }
     })();
@@ -298,14 +305,6 @@ function Shell({ onLock }: { onLock: () => void }) {
 
   useEffect(() => {
     api.dataWarnings().then(setDataWarnings).catch(() => {});
-    if (aiAutoEnable) {
-      api
-        .aiStatus()
-        .then((st) => {
-          if (!st.active) void api.aiEnable(aiMinutes);
-        })
-        .catch(() => {});
-    }
     const un = listen<ApprovalRequest>("approval-request", (e) => {
       setApprovals((q) => (q.find((r) => r.id === e.payload.id) ? q : [...q, e.payload]));
     });
@@ -317,6 +316,23 @@ function Shell({ onLock }: { onLock: () => void }) {
       unExp.then((f) => f());
     };
   }, []);
+
+  useEffect(() => {
+    if (!aiAutoEnable) return;
+    let cancelled = false;
+    const enable = async (attempt: number) => {
+      if (cancelled) return;
+      try {
+        await api.aiEnable(aiMinutes);
+      } catch {
+        if (!cancelled && attempt < 3) setTimeout(() => enable(attempt + 1), 700);
+      }
+    };
+    enable(0);
+    return () => {
+      cancelled = true;
+    };
+  }, [aiAutoEnable, aiMinutes]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -423,6 +439,9 @@ function Shell({ onLock }: { onLock: () => void }) {
       )}
 
       {approvals[0] && <ApprovalModal req={approvals[0]} onAnswer={answerApproval} />}
+      {updateOpen && updateVersion && (
+        <StartupUpdateDialog version={updateVersion} notes={updateNotes} onClose={() => setUpdateOpen(false)} />
+      )}
       <ConnectPalette open={paletteOpen} onOpenChange={setPaletteOpen} onConnect={openSession} onConnectSftp={openSftp} />
 
       <aside className="w-48 shrink-0 flex flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
@@ -440,7 +459,7 @@ function Shell({ onLock }: { onLock: () => void }) {
         <div className="p-2 flex flex-col gap-0.5 border-t">
           {updateVersion && (
             <button
-              onClick={() => goSection("settings")}
+              onClick={() => setUpdateOpen(true)}
               title={`Update to ${updateVersion} available`}
               className="group flex items-center gap-2.5 rounded-md px-2.5 h-9 text-sm font-medium text-success hover:bg-success/10 transition-colors animate-in fade-in-0 slide-in-from-bottom-1 duration-300"
             >
@@ -2673,6 +2692,30 @@ function SettingsView() {
   );
 }
 
+type TauriUpdate = {
+  version: string;
+  body?: string;
+  downloadAndInstall: (
+    cb: (e: { event: string; data?: { contentLength?: number; chunkLength?: number } }) => void,
+  ) => Promise<void>;
+};
+
+async function installTauriUpdate(onPct: (n: number) => void) {
+  const update = (window as unknown as { __kestralUpdate?: TauriUpdate }).__kestralUpdate;
+  if (!update) throw "No update to install";
+  let total = 0;
+  let got = 0;
+  await update.downloadAndInstall((e) => {
+    if (e.event === "Started") total = e.data?.contentLength ?? 0;
+    else if (e.event === "Progress") {
+      got += e.data?.chunkLength ?? 0;
+      onPct(total ? Math.round((got / total) * 100) : 0);
+    }
+  });
+  const { relaunch } = await import("@tauri-apps/plugin-process");
+  await relaunch();
+}
+
 function UpdateCard() {
   type State =
     | { kind: "idle" }
@@ -2690,37 +2733,32 @@ function UpdateCard() {
 
   async function check() {
     setState({ kind: "checking" });
+    const started = Date.now();
+    const settle = async () => {
+      const wait = 1100 - (Date.now() - started);
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    };
     try {
       const { check } = await import("@tauri-apps/plugin-updater");
       const update = await check();
+      await settle();
       if (!update) {
         setState({ kind: "current" });
         return;
       }
+      (window as unknown as { __kestralUpdate?: TauriUpdate }).__kestralUpdate = update as TauriUpdate;
       setState({ kind: "available", version: update.version, notes: update.body || undefined });
-      (window as unknown as { __kestralUpdate?: unknown }).__kestralUpdate = update;
     } catch (e) {
+      await settle();
       setState({ kind: "error", message: errText(e) });
     }
   }
 
   async function install() {
-    const update = (window as unknown as { __kestralUpdate?: { downloadAndInstall: (cb: (e: { event: string; data?: { contentLength?: number; chunkLength?: number } }) => void) => Promise<void> } }).__kestralUpdate;
-    if (!update) return;
-    let total = 0;
-    let got = 0;
     setState({ kind: "downloading", pct: 0 });
     try {
-      await update.downloadAndInstall((e) => {
-        if (e.event === "Started") total = e.data?.contentLength ?? 0;
-        else if (e.event === "Progress") {
-          got += e.data?.chunkLength ?? 0;
-          setState({ kind: "downloading", pct: total ? Math.round((got / total) * 100) : 0 });
-        }
-      });
+      await installTauriUpdate((pct) => setState({ kind: "downloading", pct }));
       setState({ kind: "ready" });
-      const { relaunch } = await import("@tauri-apps/plugin-process");
-      await relaunch();
     } catch (e) {
       setState({ kind: "error", message: errText(e) });
     }
@@ -2736,7 +2774,7 @@ function UpdateCard() {
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         <div className="flex items-center justify-between gap-4">
-          <p className="text-sm text-muted-foreground">
+          <p key={state.kind} className="text-sm text-muted-foreground animate-in fade-in-0 duration-300">
             {state.kind === "checking" && "Checking for updates…"}
             {state.kind === "current" && "You are on the latest version."}
             {state.kind === "available" && `Version ${state.version} is available.`}
@@ -2901,6 +2939,89 @@ function ConfirmDialog({
           >
             {confirmLabel ?? "Delete"}
           </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+function StartupUpdateDialog({
+  version,
+  notes,
+  onClose,
+}: {
+  version: string;
+  notes?: string;
+  onClose: () => void;
+}) {
+  const [phase, setPhase] = useState<"prompt" | "downloading" | "done" | "error">("prompt");
+  const [pct, setPct] = useState(0);
+  const [err, setErr] = useState("");
+  const busy = phase === "downloading" || phase === "done";
+
+  async function run() {
+    setPhase("downloading");
+    setPct(0);
+    try {
+      await installTauriUpdate(setPct);
+      setPhase("done");
+    } catch (e) {
+      setErr(errText(e));
+      setPhase("error");
+    }
+  }
+
+  return (
+    <AlertDialog open onOpenChange={(o) => !o && !busy && onClose()}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <div className="flex items-center gap-3">
+            <div className="size-9 rounded-lg bg-primary/15 text-primary grid place-items-center shrink-0">
+              <Download className="size-5" />
+            </div>
+            <div className="min-w-0">
+              <AlertDialogTitle>Update available</AlertDialogTitle>
+              <AlertDialogDescription>
+                Version <span className="font-medium text-foreground">{version}</span> is ready to install.
+              </AlertDialogDescription>
+            </div>
+          </div>
+        </AlertDialogHeader>
+
+        {phase === "prompt" && notes && (
+          <p className="text-xs text-muted-foreground whitespace-pre-wrap max-h-40 overflow-y-auto border-t pt-3">{notes}</p>
+        )}
+        {phase === "downloading" && (
+          <div className="flex flex-col gap-2 pt-1">
+            <div className="h-2 rounded-full bg-muted overflow-hidden">
+              <div className="h-full bg-primary transition-all duration-200" style={{ width: `${pct}%` }} />
+            </div>
+            <span className="text-xs text-muted-foreground">Downloading… {pct}%</span>
+          </div>
+        )}
+        {phase === "done" && (
+          <p className="text-sm text-muted-foreground pt-1">Installed. Restarting Kestral…</p>
+        )}
+        {phase === "error" && <p className="text-destructive text-sm pt-1">{err}</p>}
+
+        <AlertDialogFooter>
+          {phase === "prompt" && (
+            <>
+              <Button variant="secondary" onClick={onClose}>Later</Button>
+              <Button onClick={run}>
+                <Download className="size-4" />Update now
+              </Button>
+            </>
+          )}
+          {(phase === "downloading" || phase === "done") && (
+            <Button disabled>
+              <Spinner className="size-4" />
+              {phase === "done" ? "Restarting" : "Updating"}
+            </Button>
+          )}
+          {phase === "error" && (
+            <Button variant="secondary" onClick={onClose}>Close</Button>
+          )}
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
