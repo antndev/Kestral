@@ -887,16 +887,38 @@ function LabeledField({ label, children }: { label: string; children: ReactNode 
   );
 }
 
-function CopyButton({ text, label }: { text: string; label: string }) {
+function cleanText(text: string): string {
+  return text
+    .replace(/\uFEFF/g, "")
+    .replace(/[\u200B-\u200D\u2060]/g, "")
+    .replace(/\u00A0/g, " ")
+    .replace(/\r\n?/g, "\n");
+}
+
+function pasteClean(
+  e: React.ClipboardEvent<HTMLInputElement | HTMLTextAreaElement>,
+  onChange: (v: string) => void,
+) {
+  const raw = e.clipboardData.getData("text");
+  if (!raw) return;
+  e.preventDefault();
+  const el = e.currentTarget;
+  const start = el.selectionStart ?? el.value.length;
+  const end = el.selectionEnd ?? el.value.length;
+  const next = el.value.slice(0, start) + cleanText(raw) + el.value.slice(end);
+  onChange(cleanText(next));
+}
+
+function CopyButton({ text, label, className }: { text: string; label: string; className?: string }) {
   const [done, setDone] = useState(false);
   return (
     <Button
       type="button"
       size="icon-xs"
       variant="ghost"
-      className="shrink-0"
+      className={"shrink-0 active:scale-90 " + (className ?? "")}
       aria-label={label}
-      title={label}
+      title={done ? "Copied" : label}
       onClick={async (e) => {
         e.stopPropagation();
         try {
@@ -907,7 +929,11 @@ function CopyButton({ text, label }: { text: string; label: string }) {
         }
       }}
     >
-      {done ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
+      {done ? (
+        <Check className="size-3.5 text-success animate-in zoom-in-50 fade-in duration-200" />
+      ) : (
+        <Copy className="size-3.5" />
+      )}
     </Button>
   );
 }
@@ -954,7 +980,7 @@ function SecretValueField({
   async function paste() {
     try {
       const t = await clipReadText();
-      if (t) onChange(t);
+      if (t) onChange(cleanText(t));
     } catch {
     }
   }
@@ -964,7 +990,8 @@ function SecretValueField({
       <Input
         type="password"
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => onChange(cleanText(e.target.value))}
+        onPaste={(e) => pasteClean(e, onChange)}
         placeholder="••••••••"
       />
     );
@@ -973,7 +1000,8 @@ function SecretValueField({
     <div className="flex flex-col gap-1.5">
       <textarea
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => onChange(cleanText(e.target.value))}
+        onPaste={(e) => pasteClean(e, onChange)}
         placeholder={"-----BEGIN OPENSSH PRIVATE KEY-----\n…\n-----END OPENSSH PRIVATE KEY-----"}
         spellCheck={false}
         data-selectable
@@ -1360,7 +1388,6 @@ function RevealSecretSheet({ secret, onClose }: { secret: SecretMeta; onClose: (
   const [open, setOpen] = useState(true);
   const [value, setValue] = useState<string | null>(null);
   const [err, setErr] = useState("");
-  const [copied, setCopied] = useState(false);
   const [pub, setPub] = useState<{ public_key: string; fingerprint: string } | null>(null);
   const isKey = secret.kind === "private_key";
   const close = () => {
@@ -1384,16 +1411,6 @@ function RevealSecretSheet({ secret, onClose }: { secret: SecretMeta; onClose: (
       alive = false;
     };
   }, [secret.id, isKey]);
-
-  async function copy() {
-    if (value == null) return;
-    try {
-      await clipWriteText(value);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-    }
-  }
 
   return (
     <Sheet open={open} onOpenChange={(o) => !o && close()}>
@@ -1423,16 +1440,7 @@ function RevealSecretSheet({ secret, onClose }: { secret: SecretMeta; onClose: (
                   >
                     {value}
                   </div>
-                  <Button
-                    type="button"
-                    size="icon-xs"
-                    variant="ghost"
-                    className="absolute top-1.5 right-1.5"
-                    onClick={copy}
-                    aria-label="Copy value"
-                  >
-                    {copied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
-                  </Button>
+                  <CopyButton text={value} label="Copy value" className="absolute top-1.5 right-1.5" />
                 </div>
               </LabeledField>
               {pub && (
