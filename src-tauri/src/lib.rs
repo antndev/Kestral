@@ -140,7 +140,6 @@ pub fn run() {
             commands::vault_create,
             commands::vault_unlock,
             commands::vault_lock,
-            commands::vault_import,
             commands::vault_change_master,
             commands::secret_put,
             commands::secret_list,

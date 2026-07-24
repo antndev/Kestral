@@ -80,21 +80,6 @@ pub async fn vault_lock(state: State<'_, AppState>) -> Result<()> {
 }
 
 #[tauri::command]
-pub async fn vault_import(
-    state: State<'_, AppState>,
-    path: String,
-    master: String,
-) -> Result<Vec<String>> {
-    let vault = state.services.vault.clone();
-    let master = Zeroizing::new(master);
-    tokio::task::spawn_blocking(move || {
-        vault.import_missing_from(std::path::Path::new(&path), master.as_str())
-    })
-    .await
-    .map_err(|e| AppError::Other(e.to_string()))?
-}
-
-#[tauri::command]
 pub async fn vault_change_master(
     state: State<'_, AppState>,
     current: String,

@@ -95,8 +95,6 @@ export const vaultStatus = () => invoke<boolean>("vault_status");
 export const vaultCreate = (master: string) => invoke<void>("vault_create", { master });
 export const vaultUnlock = (master: string) => invoke<void>("vault_unlock", { master });
 export const vaultLock = () => invoke<void>("vault_lock");
-export const vaultImport = (path: string, master: string) =>
-  invoke<string[]>("vault_import", { path, master });
 export const vaultChangeMaster = (current: string, next: string) =>
   invoke<void>("vault_change_master", { current, new: next });
 

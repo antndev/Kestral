@@ -215,30 +215,6 @@ impl Vault {
         Ok((key, salt, data, outdated))
     }
 
-    pub fn import_missing_from(
-        &self,
-        other_path: &std::path::Path,
-        master: &str,
-    ) -> Result<Vec<String>> {
-        let (_key, _salt, other_data, _outdated) = Self::decrypt_file(other_path, master)?;
-        let mut guard = self.state.lock().unwrap();
-        let unlocked = guard.as_mut().ok_or(AppError::VaultLocked)?;
-        let mut imported = Vec::new();
-        for (id, rec) in other_data {
-            if is_reserved(&id) {
-                continue;
-            }
-            if !unlocked.data.contains_key(&id) {
-                unlocked.data.insert(id.clone(), rec);
-                imported.push(id);
-            }
-        }
-        if !imported.is_empty() {
-            self.persist(unlocked)?;
-        }
-        Ok(imported)
-    }
-
     pub fn change_master(&self, current: &str, new: &str) -> Result<()> {
         let mut guard = self.state.lock().unwrap();
         let unlocked = guard.as_mut().ok_or(AppError::VaultLocked)?;
@@ -519,40 +495,24 @@ mod tests {
     }
 
     #[test]
-    fn unlock_roundtrip_and_import_merges_without_overwrite() {
+    fn unlock_roundtrip_keeps_secrets() {
         let master = "correct horse battery";
+        let path = tmp_vault_path("rt");
+        let v = Vault::new(path.clone());
+        v.create(master).unwrap();
+        v.put_secret("shared", SecretKind::Password, b"val").unwrap();
+        v.put_secret("only", SecretKind::PrivateKey, b"key").unwrap();
 
-        let path_b = tmp_vault_path("b");
-        let vb = Vault::new(path_b.clone());
-        vb.create(master).unwrap();
-        vb.put_secret("shared", SecretKind::Password, b"from_b").unwrap();
-        vb.put_secret("only_b", SecretKind::PrivateKey, b"key_b").unwrap();
+        v.lock();
+        assert!(!v.is_unlocked());
+        v.unlock(master).unwrap();
+        assert_eq!(v.get_secret("shared").unwrap().to_vec(), b"val".to_vec());
+        assert_eq!(v.get_secret("only").unwrap().to_vec(), b"key".to_vec());
 
-        let path_a = tmp_vault_path("a");
-        let va = Vault::new(path_a.clone());
-        va.create(master).unwrap();
-        va.put_secret("shared", SecretKind::Password, b"from_a").unwrap();
-        va.put_secret("only_a", SecretKind::Password, b"val_a").unwrap();
+        v.lock();
+        assert!(v.unlock("wrong").is_err());
 
-        va.lock();
-        assert!(!va.is_unlocked());
-        va.unlock(master).unwrap();
-        assert_eq!(va.get_secret("only_a").unwrap().to_vec(), b"val_a".to_vec());
-
-        let mut imported = va.import_missing_from(&path_b, master).unwrap();
-        imported.sort();
-        assert_eq!(imported, vec!["only_b".to_string()]);
-        assert_eq!(va.get_secret("only_b").unwrap().to_vec(), b"key_b".to_vec());
-        assert_eq!(va.get_secret("shared").unwrap().to_vec(), b"from_a".to_vec());
-
-        va.lock();
-        va.unlock(master).unwrap();
-        assert_eq!(va.get_secret("only_b").unwrap().to_vec(), b"key_b".to_vec());
-
-        assert!(va.import_missing_from(&path_b, "wrong").is_err());
-
-        let _ = std::fs::remove_file(&path_a);
-        let _ = std::fs::remove_file(&path_b);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

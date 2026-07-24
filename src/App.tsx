@@ -19,15 +19,12 @@ import {
   Settings,
   Folder,
   ClipboardPaste,
-  Import,
   Play,
   X,
   Eye,
   Wand2,
 } from "lucide-react";
 import { readText as clipReadText, writeText as clipWriteText } from "@tauri-apps/plugin-clipboard-manager";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { homeDir, join } from "@tauri-apps/api/path";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -954,10 +951,12 @@ function SecretValueField({
   isKey,
   value,
   onChange,
+  invalid,
 }: {
   isKey: boolean;
   value: string;
   onChange: (v: string) => void;
+  invalid?: boolean;
 }) {
   const [derived, setDerived] = useState<{ public_key: string; fingerprint: string } | null>(null);
 
@@ -992,6 +991,7 @@ function SecretValueField({
       <Input
         type="password"
         value={value}
+        aria-invalid={invalid || undefined}
         onChange={(e) => onChange(cleanText(e.target.value))}
         onPaste={(e) => pasteClean(e, onChange)}
         placeholder="••••••••"
@@ -1008,7 +1008,10 @@ function SecretValueField({
         spellCheck={false}
         data-selectable
         rows={7}
-        className="w-full rounded-md border border-input bg-transparent dark:bg-input/30 px-3 py-2 text-xs font-mono leading-relaxed resize-y outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+        className={
+          "w-full rounded-md border bg-transparent dark:bg-input/30 px-3 py-2 text-xs font-mono leading-relaxed resize-y outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] " +
+          (invalid ? "border-destructive ring-destructive/20 ring-[3px]" : "border-input")
+        }
       />
       <div className="flex justify-end">
         <Button type="button" size="xs" variant="ghost" onClick={paste}>
@@ -1285,7 +1288,6 @@ function HostSheet({
 function KeychainView() {
   const [secrets, setSecrets] = useState<SecretMeta[]>([]);
   const [adding, setAdding] = useState(false);
-  const [importing, setImporting] = useState(false);
   const [toDelete, setToDelete] = useState<SecretMeta | null>(null);
   const [toReveal, setToReveal] = useState<SecretMeta | null>(null);
   const refresh = useCallback(async () => setSecrets(await api.secretList()), []);
@@ -1299,14 +1301,9 @@ function KeychainView() {
         title="Keychain"
         subtitle="Keys and passwords, encrypted in the vault. Hosts reference them by ID."
         action={
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={() => setImporting(true)}>
-              <Import className="size-4" /> Import
-            </Button>
-            <Button onClick={() => setAdding(true)}>
-              <Plus className="size-4" /> New credential
-            </Button>
-          </div>
+          <Button onClick={() => setAdding(true)}>
+            <Plus className="size-4" /> New credential
+          </Button>
         }
       />
 
@@ -1364,7 +1361,6 @@ function KeychainView() {
       )}
 
       {adding && <KeychainSheet onClose={() => setAdding(false)} onSaved={refresh} />}
-      {importing && <ImportVaultSheet onClose={() => setImporting(false)} onSaved={refresh} />}
       {toReveal && <RevealSecretSheet secret={toReveal} onClose={() => setToReveal(null)} />}
 
       {toDelete && (
@@ -1478,6 +1474,8 @@ function KeychainSheet({ onClose, onSaved }: { onClose: () => void; onSaved: () 
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [justGen, setJustGen] = useState(false);
+  const [tried, setTried] = useState(false);
   const [open, setOpen] = useState(true);
   const close = () => {
     setOpen(false);
@@ -1489,6 +1487,8 @@ function KeychainSheet({ onClose, onSaved }: { onClose: () => void; onSaved: () 
     setGenerating(true);
     try {
       setValue(await api.generateKey("ed25519", id || undefined));
+      setJustGen(true);
+      setTimeout(() => setJustGen(false), 1400);
     } catch (e) {
       setErr(errText(e));
     } finally {
@@ -1497,6 +1497,11 @@ function KeychainSheet({ onClose, onSaved }: { onClose: () => void; onSaved: () 
   }
 
   async function save() {
+    setTried(true);
+    if (!id || !value) {
+      setErr("Fill in the highlighted fields.");
+      return;
+    }
     setErr("");
     setBusy(true);
     try {
@@ -1523,7 +1528,12 @@ function KeychainSheet({ onClose, onSaved }: { onClose: () => void; onSaved: () 
         </SheetHeader>
         <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-4">
           <LabeledField label="ID">
-            <Input value={id} onChange={(e) => setId(e.target.value)} placeholder="prod-key" />
+            <Input
+              value={id}
+              aria-invalid={(tried && !id) || undefined}
+              onChange={(e) => setId(e.target.value)}
+              placeholder="prod-key"
+            />
           </LabeledField>
           <LabeledField label="Type">
             <Select value={kind} onValueChange={(v) => v && setKind(v as SecretKind)}>
@@ -1537,127 +1547,41 @@ function KeychainSheet({ onClose, onSaved }: { onClose: () => void; onSaved: () 
             </Select>
           </LabeledField>
           <LabeledField label="Value (encrypted)">
-            <SecretValueField isKey={kind === "private_key"} value={value} onChange={setValue} />
+            <div className={justGen ? "animate-in fade-in-0 slide-in-from-top-1 duration-300" : ""}>
+              <SecretValueField
+                isKey={kind === "private_key"}
+                value={value}
+                onChange={setValue}
+                invalid={tried && !value}
+              />
+            </div>
             {kind === "private_key" && !value && (
               <div className="mt-1.5 flex items-center justify-between gap-2">
                 <span className="text-xs text-muted-foreground">
                   No key yet? <span className="text-foreground">Ed25519</span>
                   <span className="ml-1 rounded bg-success/15 px-1.5 py-0.5 text-[10px] text-success">Recommended</span>
                 </span>
-                <Button type="button" size="xs" variant="secondary" onClick={generate} disabled={generating}>
-                  {generating ? <Spinner className="size-3.5" /> : <Wand2 className="size-3.5" />}
-                  Generate
+                <Button type="button" size="xs" variant="secondary" onClick={generate} disabled={generating} className="active:scale-95">
+                  {generating ? (
+                    <Wand2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Wand2 className="size-3.5" />
+                  )}
+                  {generating ? "Generating…" : "Generate"}
                 </Button>
               </div>
             )}
+            {kind === "private_key" && justGen && (
+              <p className="mt-1.5 flex items-center gap-1.5 text-xs text-success animate-in fade-in-0 zoom-in-95 duration-200">
+                <Check className="size-3.5" /> Fresh Ed25519 key generated. Save it, then add the public key to your server.
+              </p>
+            )}
           </LabeledField>
-          {err && <p className="text-destructive text-sm">{err}</p>}
+          {err && <p className="text-destructive text-sm animate-in fade-in-0 slide-in-from-top-1 duration-200">{err}</p>}
         </div>
         <SheetFooter>
-          <Button className="w-full" onClick={save} disabled={busy || !id || !value}>
+          <Button className="w-full" onClick={save} disabled={busy}>
             {busy && <Spinner className="size-4" />}Save credential
-          </Button>
-        </SheetFooter>
-      </SheetContent>
-    </Sheet>
-  );
-}
-
-function ImportVaultSheet({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
-  const [path, setPath] = useState("");
-  const [master, setMaster] = useState("");
-  const [err, setErr] = useState("");
-  const [note, setNote] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [open, setOpen] = useState(true);
-  const close = () => {
-    setOpen(false);
-    setTimeout(onClose, 220);
-  };
-
-  useEffect(() => {
-    homeDir()
-      .then((h) => join(h, ".kestral", "_backup_roaming", "vault.json"))
-      .then(setPath)
-      .catch(() => {});
-  }, []);
-
-  async function browse() {
-    try {
-      const sel = await openDialog({
-        multiple: false,
-        filters: [{ name: "Vault", extensions: ["json"] }],
-      });
-      if (typeof sel === "string") setPath(sel);
-    } catch {
-    }
-  }
-
-  async function run() {
-    setErr("");
-    setNote("");
-    setBusy(true);
-    try {
-      const ids = await api.vaultImport(path, master);
-      onSaved();
-      setMaster("");
-      setNote(
-        ids.length === 0
-          ? "Nothing new. This vault already has every credential from that file."
-          : `Imported ${ids.length}: ${ids.join(", ")}`,
-      );
-    } catch (e) {
-      setErr(errText(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Sheet open={open} onOpenChange={(o) => !o && close()}>
-      <SheetContent
-        side="right"
-        style={{ top: "2.75rem", bottom: "auto", height: "calc(100svh - 2.75rem)" }}
-        className="w-[400px] sm:max-w-[400px] flex flex-col gap-0 p-0"
-      >
-        <SheetHeader>
-          <SheetTitle>Import from vault file</SheetTitle>
-          <SheetDescription className="sr-only">
-            Copy missing credentials from another vault file into this one.
-          </SheetDescription>
-        </SheetHeader>
-        <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-4">
-          <p className="text-xs text-muted-foreground leading-relaxed">
-            Copies credentials this vault is missing from another vault file (e.g. a backup).
-            Existing ones are kept. The master password decrypts the source inside the core; secret
-            values never leave it.
-          </p>
-          <LabeledField label="Vault file">
-            <div className="flex gap-2">
-              <Input
-                value={path}
-                onChange={(e) => setPath(e.target.value)}
-                placeholder="…/vault.json"
-              />
-              <Button variant="outline" type="button" onClick={browse}>
-                Browse
-              </Button>
-            </div>
-          </LabeledField>
-          <LabeledField label="Master password of that file">
-            <Input
-              type="password"
-              value={master}
-              onChange={(e) => setMaster(e.target.value)}
-              placeholder="••••••••"
-            />
-          </LabeledField>
-          {err && <p className="text-destructive text-sm">{err}</p>}
-          {note && <p className="text-sm text-muted-foreground">{note}</p>}
-        </div>
-        <SheetFooter>
-          <Button className="w-full" onClick={run} disabled={busy || !path || !master}>
-            {busy && <Spinner className="size-4" />}Import
           </Button>
         </SheetFooter>
       </SheetContent>
@@ -1828,6 +1752,7 @@ function SnippetSheet({
   const [targets, setTargets] = useState<string[]>(snippet?.target_host_ids ?? []);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [tried, setTried] = useState(false);
   const [open, setOpen] = useState(true);
   const close = () => {
     setOpen(false);
@@ -1839,6 +1764,11 @@ function SnippetSheet({
   }
 
   async function save() {
+    setTried(true);
+    if (!label || !script) {
+      setErr("Fill in the highlighted fields.");
+      return;
+    }
     setErr("");
     setBusy(true);
     try {
@@ -1870,10 +1800,10 @@ function SnippetSheet({
         <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-5">
           <FormSection title="Script">
             <LabeledField label="Name">
-              <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Update & reboot" />
+              <Input value={label} aria-invalid={(tried && !label) || undefined} onChange={(e) => setLabel(e.target.value)} placeholder="Update & reboot" />
             </LabeledField>
             <LabeledField label="Script">
-              <Input value={script} onChange={(e) => setScript(e.target.value)} placeholder="sudo apt update && sudo apt upgrade -y" />
+              <Input value={script} aria-invalid={(tried && !script) || undefined} onChange={(e) => setScript(e.target.value)} placeholder="sudo apt update && sudo apt upgrade -y" />
             </LabeledField>
           </FormSection>
 
@@ -1901,10 +1831,10 @@ function SnippetSheet({
             )}
           </FormSection>
 
-          {err && <p className="text-destructive text-sm">{err}</p>}
+          {err && <p className="text-destructive text-sm animate-in fade-in-0 slide-in-from-top-1 duration-200">{err}</p>}
         </div>
         <SheetFooter>
-          <Button className="w-full" onClick={save} disabled={busy || !label || !script}>
+          <Button className="w-full" onClick={save} disabled={busy}>
             {editing ? "Save" : "Save script"}
           </Button>
         </SheetFooter>
