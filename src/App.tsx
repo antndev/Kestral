@@ -23,6 +23,7 @@ import {
   X,
   Eye,
   Wand2,
+  Download,
 } from "lucide-react";
 import { readText as clipReadText, writeText as clipWriteText } from "@tauri-apps/plugin-clipboard-manager";
 
@@ -261,6 +262,22 @@ function Shell({ onLock }: { onLock: () => void }) {
   const [dataWarnings, setDataWarnings] = useState<string[]>([]);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [locking, setLocking] = useState(false);
+  const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const { check } = await import("@tauri-apps/plugin-updater");
+        const u = await check();
+        if (alive && u) setUpdateVersion(u.version);
+      } catch {
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -421,6 +438,19 @@ function Shell({ onLock }: { onLock: () => void }) {
           ))}
         </nav>
         <div className="p-2 flex flex-col gap-0.5 border-t">
+          {updateVersion && (
+            <button
+              onClick={() => goSection("settings")}
+              title={`Update to ${updateVersion} available`}
+              className="group flex items-center gap-2.5 rounded-md px-2.5 h-9 text-sm font-medium text-success hover:bg-success/10 transition-colors animate-in fade-in-0 slide-in-from-bottom-1 duration-300"
+            >
+              <span className="relative flex size-4 shrink-0 items-center justify-center">
+                <Download className="size-4 transition-transform group-hover:scale-110" />
+                <span className="absolute -top-1 -right-1 size-2 rounded-full bg-success animate-pulse" />
+              </span>
+              <span className="truncate flex-1 text-left">Update ready</span>
+            </button>
+          )}
           <NavButton
             icon={Settings}
             label="Settings"
@@ -2653,6 +2683,10 @@ function UpdateCard() {
     | { kind: "ready" }
     | { kind: "error"; message: string };
   const [state, setState] = useState<State>({ kind: "idle" });
+
+  useEffect(() => {
+    check();
+  }, []);
 
   async function check() {
     setState({ kind: "checking" });
