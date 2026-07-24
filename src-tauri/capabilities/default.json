@@ -12,6 +12,8 @@
     "dialog:default",
     "clipboard-manager:allow-read-text",
     "clipboard-manager:allow-write-text",
-    "drag:default"
+    "drag:default",
+    "updater:default",
+    "process:default"
   ]
 }

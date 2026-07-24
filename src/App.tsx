@@ -2636,8 +2636,109 @@ function SettingsView() {
         </CardContent>
       </Card>
 
+      <UpdateCard />
       <ChangePasswordCard />
     </div>
+  );
+}
+
+function UpdateCard() {
+  type State =
+    | { kind: "idle" }
+    | { kind: "checking" }
+    | { kind: "current" }
+    | { kind: "available"; version: string; notes?: string }
+    | { kind: "downloading"; pct: number }
+    | { kind: "ready" }
+    | { kind: "error"; message: string };
+  const [state, setState] = useState<State>({ kind: "idle" });
+
+  async function check() {
+    setState({ kind: "checking" });
+    try {
+      const { check } = await import("@tauri-apps/plugin-updater");
+      const update = await check();
+      if (!update) {
+        setState({ kind: "current" });
+        return;
+      }
+      setState({ kind: "available", version: update.version, notes: update.body || undefined });
+      (window as unknown as { __kestralUpdate?: unknown }).__kestralUpdate = update;
+    } catch (e) {
+      setState({ kind: "error", message: errText(e) });
+    }
+  }
+
+  async function install() {
+    const update = (window as unknown as { __kestralUpdate?: { downloadAndInstall: (cb: (e: { event: string; data?: { contentLength?: number; chunkLength?: number } }) => void) => Promise<void> } }).__kestralUpdate;
+    if (!update) return;
+    let total = 0;
+    let got = 0;
+    setState({ kind: "downloading", pct: 0 });
+    try {
+      await update.downloadAndInstall((e) => {
+        if (e.event === "Started") total = e.data?.contentLength ?? 0;
+        else if (e.event === "Progress") {
+          got += e.data?.chunkLength ?? 0;
+          setState({ kind: "downloading", pct: total ? Math.round((got / total) * 100) : 0 });
+        }
+      });
+      setState({ kind: "ready" });
+      const { relaunch } = await import("@tauri-apps/plugin-process");
+      await relaunch();
+    } catch (e) {
+      setState({ kind: "error", message: errText(e) });
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Updates</CardTitle>
+        <CardDescription>
+          Kestral checks GitHub releases and installs a signed update when you choose to.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-4">
+          <p className="text-sm text-muted-foreground">
+            {state.kind === "checking" && "Checking for updates…"}
+            {state.kind === "current" && "You are on the latest version."}
+            {state.kind === "available" && `Version ${state.version} is available.`}
+            {state.kind === "downloading" && `Downloading… ${state.pct}%`}
+            {state.kind === "ready" && "Installed. Restarting…"}
+            {state.kind === "error" && <span className="text-destructive">{state.message}</span>}
+            {state.kind === "idle" && "Check whether a newer version is available."}
+          </p>
+          <div className="w-40 shrink-0 flex justify-end">
+            {state.kind === "available" ? (
+              <Button size="sm" className="w-full" onClick={install}>
+                Update now
+              </Button>
+            ) : state.kind === "downloading" || state.kind === "ready" ? (
+              <Button size="sm" className="w-full" disabled>
+                <Spinner className="size-4" />
+                {state.kind === "ready" ? "Restarting" : "Updating"}
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="secondary"
+                className="w-full"
+                onClick={check}
+                disabled={state.kind === "checking"}
+              >
+                {state.kind === "checking" && <Spinner className="size-4" />}
+                Check for updates
+              </Button>
+            )}
+          </div>
+        </div>
+        {state.kind === "available" && state.notes && (
+          <p className="text-xs text-muted-foreground whitespace-pre-wrap border-t pt-3">{state.notes}</p>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
