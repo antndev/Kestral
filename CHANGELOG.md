@@ -3,6 +3,11 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.7 - 2026-07-25
+
+### Added
+- Settings shows the current version and a polished in-app changelog.
+
 ## 0.1.6 - 2026-07-25
 
 ### Fixed
