@@ -176,6 +176,7 @@ export const auditList = () => invoke<AuditEntry[]>("audit_list");
 export const auditUserCommand = (hostId: string, command: string) =>
   invoke<void>("audit_user_command", { hostId, command });
 
+export const appChangelog = () => invoke<string>("app_changelog");
 export const mcpInfo = () => invoke<McpInfo>("mcp_info");
 export const dataWarnings = () => invoke<string[]>("data_warnings");
 export interface RotateResult {

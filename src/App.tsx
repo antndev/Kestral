@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 import {
   Server,
   HardDrive,
@@ -2717,6 +2718,107 @@ async function installTauriUpdate(onPct: (n: number) => void) {
   await relaunch();
 }
 
+function changelogCategoryColor(cat: string): string {
+  const c = cat.toLowerCase();
+  if (c === "added") return "text-success";
+  if (c === "fixed") return "text-info";
+  if (c === "changed") return "text-warning";
+  if (c === "removed") return "text-destructive";
+  return "text-muted-foreground";
+}
+
+function changelogInline(text: string, keyBase: string): ReactNode[] {
+  const stripped = text.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+  return stripped.split(/(\*\*[^*]+\*\*)/g).map((p, i) =>
+    p.startsWith("**") && p.endsWith("**") ? (
+      <strong key={keyBase + i} className="font-medium text-foreground">{p.slice(2, -2)}</strong>
+    ) : (
+      <span key={keyBase + i}>{p}</span>
+    ),
+  );
+}
+
+function ChangelogBody({ md }: { md: string }) {
+  const out: ReactNode[] = [];
+  let items: string[] = [];
+  const flush = (k: string) => {
+    if (!items.length) return;
+    out.push(
+      <ul key={"ul" + k} className="flex flex-col gap-1.5 mb-2">
+        {items.map((it, i) => (
+          <li key={i} className="flex gap-2 text-sm text-muted-foreground">
+            <span className="text-muted-foreground/40 mt-0.5 shrink-0">•</span>
+            <span>{changelogInline(it, k + "i" + i)}</span>
+          </li>
+        ))}
+      </ul>,
+    );
+    items = [];
+  };
+  md.split("\n").forEach((raw, idx) => {
+    const line = raw.replace(/\r$/, "");
+    if (line.startsWith("## ")) {
+      flush(String(idx));
+      out.push(<h3 key={idx} className="text-sm font-semibold mt-5 mb-2 first:mt-0">{line.slice(3)}</h3>);
+    } else if (line.startsWith("### ")) {
+      flush(String(idx));
+      const cat = line.slice(4);
+      out.push(<div key={idx} className={"text-xs font-medium mb-1.5 " + changelogCategoryColor(cat)}>{cat}</div>);
+    } else if (line.startsWith("# ")) {
+      // skip the document title
+    } else if (line.startsWith("- ")) {
+      items.push(line.slice(2));
+    } else if (line.trim() === "") {
+      flush(String(idx));
+    } else {
+      flush(String(idx));
+      out.push(<p key={idx} className="text-xs text-muted-foreground mb-3 leading-relaxed">{changelogInline(line, String(idx))}</p>);
+    }
+  });
+  flush("end");
+  return <>{out}</>;
+}
+
+function ChangelogSheet({ onClose }: { onClose: () => void }) {
+  const [open, setOpen] = useState(true);
+  const [md, setMd] = useState<string | null>(null);
+  const [err, setErr] = useState("");
+  const close = () => {
+    setOpen(false);
+    setTimeout(onClose, 220);
+  };
+  useEffect(() => {
+    let alive = true;
+    api.appChangelog().then((t) => alive && setMd(t)).catch((e) => alive && setErr(errText(e)));
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return (
+    <Sheet open={open} onOpenChange={(o) => !o && close()}>
+      <SheetContent
+        side="right"
+        style={{ top: "2.75rem", bottom: "auto", height: "calc(100svh - 2.75rem)" }}
+        className="w-[440px] sm:max-w-[440px] flex flex-col gap-0 p-0"
+      >
+        <SheetHeader>
+          <SheetTitle>Changelog</SheetTitle>
+          <SheetDescription>What changed in each version.</SheetDescription>
+        </SheetHeader>
+        <div className="flex-1 overflow-y-auto px-5 py-4">
+          {err ? (
+            <p className="text-destructive text-sm">{err}</p>
+          ) : md == null ? (
+            <p className="text-muted-foreground text-sm">Loading…</p>
+          ) : (
+            <ChangelogBody md={md} />
+          )}
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
 function UpdateCard() {
   type State =
     | { kind: "idle" }
@@ -2727,8 +2829,11 @@ function UpdateCard() {
     | { kind: "ready" }
     | { kind: "error"; message: string };
   const [state, setState] = useState<State>({ kind: "idle" });
+  const [version, setVersion] = useState("");
+  const [changelog, setChangelog] = useState(false);
 
   useEffect(() => {
+    getVersion().then(setVersion).catch(() => {});
     check();
   }, []);
 
@@ -2817,7 +2922,16 @@ function UpdateCard() {
         {state.kind === "available" && state.notes && (
           <p className="text-xs text-muted-foreground whitespace-pre-wrap border-t pt-3">{state.notes}</p>
         )}
+        <div className="flex items-center justify-between gap-4 border-t pt-3">
+          <span className="text-xs text-muted-foreground">
+            Current version <span className="font-medium text-foreground tabular-nums">{version || "…"}</span>
+          </span>
+          <Button size="xs" variant="ghost" onClick={() => setChangelog(true)}>
+            <ScrollText className="size-3.5" />Changelog
+          </Button>
+        </div>
       </CardContent>
+      {changelog && <ChangelogSheet onClose={() => setChangelog(false)} />}
     </Card>
   );
 }

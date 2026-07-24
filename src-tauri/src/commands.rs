@@ -167,6 +167,11 @@ pub async fn generate_key(algorithm: Option<String>, comment: Option<String>) ->
 }
 
 #[tauri::command]
+pub fn app_changelog() -> String {
+    include_str!("../../CHANGELOG.md").to_string()
+}
+
+#[tauri::command]
 pub fn drag_icon_path() -> std::result::Result<String, String> {
     let path = std::env::temp_dir().join("kestral-drag-icon.png");
     if !path.exists() {

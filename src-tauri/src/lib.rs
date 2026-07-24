@@ -149,6 +149,7 @@ pub fn run() {
             commands::secret_reveal,
             commands::generate_key,
             commands::derive_pubkey,
+            commands::app_changelog,
             commands::drag_icon_path,
             commands::host_list,
             commands::host_add,
