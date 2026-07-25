@@ -3,6 +3,12 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.8 - 2026-07-25
+
+### Changed
+- Lighter blue app icon background.
+- The window title bar shows the feather alone, without the badge.
+
 ## 0.1.7 - 2026-07-25
 
 ### Added
