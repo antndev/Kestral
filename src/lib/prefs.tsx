@@ -16,7 +16,6 @@ const TERM_KEY = "kestral-term-theme";
 const AI_MIN_KEY = "kestral-ai-minutes";
 const SFTP_HIDDEN_KEY = "kestral-sftp-hidden";
 const SFTP_AUTOREFRESH_KEY = "kestral-sftp-autorefresh";
-const AI_AUTO_KEY = "kestral-ai-auto-enable";
 const TERM_COLORS_KEY = "kestral-term-colors";
 
 export const THEMES: Theme[] = ["system", "light", "dark"];
@@ -66,8 +65,6 @@ type Prefs = {
   setAnimScale: (v: number) => void;
   aiMinutes: number;
   setAiMinutes: (m: number) => void;
-  aiAutoEnable: boolean;
-  setAiAutoEnable: (v: boolean) => void;
   sftpShowHidden: boolean;
   setSftpShowHidden: (v: boolean) => void;
   sftpAutoRefresh: boolean;
@@ -93,9 +90,6 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
     const v = Number(localStorage.getItem(AI_MIN_KEY));
     return Number.isFinite(v) && v > 0 ? v : 30;
   });
-  const [aiAutoEnable, setAiAutoEnableState] = useState<boolean>(
-    () => localStorage.getItem(AI_AUTO_KEY) === "true",
-  );
   const [sftpShowHidden, setSftpShowHiddenState] = useState<boolean>(
     () => localStorage.getItem(SFTP_HIDDEN_KEY) !== "false",
   );
@@ -147,10 +141,6 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(SFTP_HIDDEN_KEY, String(v));
     setSftpShowHiddenState(v);
   };
-  const setAiAutoEnable = (v: boolean) => {
-    localStorage.setItem(AI_AUTO_KEY, String(v));
-    setAiAutoEnableState(v);
-  };
   const setSftpAutoRefresh = (v: boolean) => {
     localStorage.setItem(SFTP_AUTOREFRESH_KEY, String(v));
     setSftpAutoRefreshState(v);
@@ -173,8 +163,6 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
         setTermColors,
         aiMinutes,
         setAiMinutes,
-        aiAutoEnable,
-        setAiAutoEnable,
         sftpShowHidden,
         setSftpShowHidden,
         sftpAutoRefresh,

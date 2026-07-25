@@ -84,7 +84,7 @@ pub fn run() {
             let services = Services {
                 vault: vault.clone(),
                 hosts: Arc::new(hosts::HostStore::new(base_dir.join("hosts.json"), vault.clone())),
-                policy: Arc::new(policy::PolicyEngine::new()),
+                policy: Arc::new(policy::PolicyEngine::new(base_dir.join("ai_state"))),
                 approval: Arc::new(approval::ApprovalBroker::new(app.handle().clone())),
                 audit: Arc::new(audit::AuditLog::new(
                     base_dir.join("audit.log"),

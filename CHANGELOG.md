@@ -3,6 +3,11 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.9 - 2026-07-25
+
+### Fixed
+- AI access remembers its on or off state on disk and restores it after a restart or update. Only turning it off yourself keeps it off.
+
 ## 0.1.8 - 2026-07-25
 
 ### Changed

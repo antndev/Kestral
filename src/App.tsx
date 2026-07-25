@@ -254,7 +254,6 @@ type SessionTab = { tabId: string; host: Host; kind: "terminal" | "sftp" };
 type TopTab = "start" | string;
 
 function Shell({ onLock }: { onLock: () => void }) {
-  const { aiAutoEnable, aiMinutes } = usePrefs();
   const [section, setSection] = useState<Section>("hosts");
   const [sessions, setSessions] = useState<SessionTab[]>([]);
   const [topTab, setTopTab] = useState<TopTab>("start");
@@ -318,23 +317,6 @@ function Shell({ onLock }: { onLock: () => void }) {
     };
   }, []);
 
-  useEffect(() => {
-    if (!aiAutoEnable) return;
-    let cancelled = false;
-    const enable = async (attempt: number) => {
-      if (cancelled) return;
-      try {
-        await api.aiEnable(aiMinutes);
-        if (!cancelled) setAiActive(true);
-      } catch {
-        if (!cancelled && attempt < 4) setTimeout(() => enable(attempt + 1), 700);
-      }
-    };
-    enable(0);
-    return () => {
-      cancelled = true;
-    };
-  }, [aiAutoEnable, aiMinutes]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -2565,8 +2547,6 @@ function SettingsView() {
     setTermColors,
     aiMinutes,
     setAiMinutes,
-    aiAutoEnable,
-    setAiAutoEnable,
     sftpShowHidden,
     setSftpShowHidden,
     sftpAutoRefresh,
@@ -2665,14 +2645,10 @@ function SettingsView() {
         </CardHeader>
         <CardContent className="flex flex-col gap-5">
           <SettingRow
-            label="Turn on after unlocking"
-            hint="Enables AI access automatically once you unlock. The auto-off timer still applies."
+            label="Stays on across restarts"
+            hint="AI access remembers its on or off state on disk and restores it after a restart or update. Only turning it off yourself keeps it off."
           >
-            <Switch
-              checked={aiAutoEnable}
-              onCheckedChange={setAiAutoEnable}
-              aria-label="Enable AI access after unlocking"
-            />
+            <span className="text-xs text-muted-foreground">Automatic</span>
           </SettingRow>
           <SettingRow label="Default duration" hint="Preset for the auto-off timer.">
             <div className="w-64">

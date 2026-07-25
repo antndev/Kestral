@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use chrono::{DateTime, Duration, Utc};
@@ -57,35 +58,63 @@ struct Inner {
 
 pub struct PolicyEngine {
     inner: Mutex<Inner>,
+    state_path: PathBuf,
 }
 
 impl PolicyEngine {
-    pub fn new() -> Self {
+    const MAX_MINUTES: i64 = 24 * 60;
+
+    pub fn new(state_path: PathBuf) -> Self {
+        let saved = std::fs::read_to_string(&state_path).unwrap_or_default();
+        let (enabled, expires_at) = if saved.trim_start().starts_with("on") {
+            let mins = saved
+                .split_whitespace()
+                .nth(1)
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(30)
+                .clamp(1, Self::MAX_MINUTES);
+            (true, Some(Utc::now() + Duration::minutes(mins)))
+        } else {
+            (false, None)
+        };
         Self {
             inner: Mutex::new(Inner {
-                enabled: false,
-                expires_at: None,
+                enabled,
+                expires_at,
                 default_minutes: 30,
                 caps: AiCaps::default(),
             }),
+            state_path,
         }
     }
 
-    const MAX_MINUTES: i64 = 24 * 60;
+    fn save(&self, on: bool, minutes: i64) {
+        let _ = std::fs::write(
+            &self.state_path,
+            if on { format!("on {minutes}") } else { "off".to_string() },
+        );
+    }
 
     pub fn enable(&self, minutes: Option<i64>) {
-        let mut inner = self.inner.lock().unwrap();
-        let mins = minutes
-            .unwrap_or(inner.default_minutes)
-            .clamp(1, Self::MAX_MINUTES);
-        inner.enabled = true;
-        inner.expires_at = Some(Utc::now() + Duration::minutes(mins));
+        let mins = {
+            let mut inner = self.inner.lock().unwrap();
+            let mins = minutes
+                .unwrap_or(inner.default_minutes)
+                .clamp(1, Self::MAX_MINUTES);
+            inner.enabled = true;
+            inner.expires_at = Some(Utc::now() + Duration::minutes(mins));
+            mins
+        };
+        self.save(true, mins);
     }
 
     pub fn disable(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.enabled = false;
-        inner.expires_at = None;
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.enabled = false;
+            inner.expires_at = None;
+        }
+        self.save(false, 0);
     }
 
     fn check_active(inner: &mut Inner) -> bool {
@@ -135,11 +164,5 @@ impl PolicyEngine {
             AiPolicy::Confirm => Gate::NeedsApproval,
             AiPolicy::Free => Gate::Allowed,
         }
-    }
-}
-
-impl Default for PolicyEngine {
-    fn default() -> Self {
-        Self::new()
     }
 }
