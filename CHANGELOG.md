@@ -3,6 +3,11 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.10 - 2026-07-25
+
+### Changed
+- App icon is just the feather now, with no background.
+
 ## 0.1.9 - 2026-07-25
 
 ### Fixed

@@ -121,12 +121,6 @@ pub fn run() {
             app.manage(terminal::Sessions::default());
             app.manage(sftp::SftpSessions::default());
 
-            if let Some(win) = app.get_webview_window("main") {
-                if let Ok(icon) = tauri::image::Image::from_bytes(include_bytes!("../window-icon.png")) {
-                    let _ = win.set_icon(icon);
-                }
-            }
-
             let mcp_handle = app.handle().clone();
             let reset_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
