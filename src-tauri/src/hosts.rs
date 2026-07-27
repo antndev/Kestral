@@ -243,6 +243,7 @@ mod tests {
             },
             ai_policy: AiPolicy::Locked,
             ai_file_policy: AiPolicy::Locked,
+            forward_agent: false,
         };
 
         store.add(mk("prod")).unwrap();

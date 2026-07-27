@@ -17,6 +17,7 @@ export interface Host {
   auth: AuthMethod;
   ai_policy: AiPolicy;
   ai_file_policy: AiPolicy;
+  forward_agent: boolean;
 }
 
 export interface NewHost {
@@ -27,6 +28,7 @@ export interface NewHost {
   auth: AuthMethod;
   ai_policy: AiPolicy;
   ai_file_policy: AiPolicy;
+  forward_agent: boolean;
 }
 
 export interface FileEntry {

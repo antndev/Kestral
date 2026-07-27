@@ -23,6 +23,39 @@ pub struct ClientHandler {
     host: String,
     port: u16,
     key_changed: Arc<std::sync::atomic::AtomicBool>,
+    forward_agent: bool,
+}
+
+async fn proxy_agent(channel: russh::Channel<client::Msg>) {
+    let mut stream = channel.into_stream();
+    #[cfg(windows)]
+    {
+        use tokio::net::windows::named_pipe::ClientOptions;
+        match ClientOptions::new().open(r"\\.\pipe\openssh-ssh-agent") {
+            Ok(mut agent) => {
+                if let Err(e) = tokio::io::copy_bidirectional(&mut stream, &mut agent).await {
+                    tracing::debug!("agent forward channel closed: {e}");
+                }
+            }
+            Err(e) => {
+                tracing::warn!("no local ssh agent at \\\\.\\pipe\\openssh-ssh-agent: {e}");
+            }
+        }
+    }
+    #[cfg(unix)]
+    {
+        match std::env::var("SSH_AUTH_SOCK") {
+            Ok(sock) => match tokio::net::UnixStream::connect(&sock).await {
+                Ok(mut agent) => {
+                    if let Err(e) = tokio::io::copy_bidirectional(&mut stream, &mut agent).await {
+                        tracing::debug!("agent forward channel closed: {e}");
+                    }
+                }
+                Err(e) => tracing::warn!("cannot connect to SSH_AUTH_SOCK {sock}: {e}"),
+            },
+            Err(_) => tracing::warn!("agent forwarding requested but SSH_AUTH_SOCK is not set"),
+        }
+    }
 }
 
 impl client::Handler for ClientHandler {
@@ -66,6 +99,17 @@ impl client::Handler for ClientHandler {
             }
         }
     }
+
+    async fn server_channel_open_agent_forward(
+        &mut self,
+        channel: russh::Channel<client::Msg>,
+        _session: &mut client::Session,
+    ) -> std::result::Result<(), Self::Error> {
+        if self.forward_agent {
+            tokio::spawn(proxy_agent(channel));
+        }
+        Ok(())
+    }
 }
 
 pub struct SshManager {}
@@ -99,6 +143,7 @@ impl SshManager {
             host: host.hostname.clone(),
             port: host.port,
             key_changed: key_changed.clone(),
+            forward_agent: host.forward_agent,
         };
 
         on_stage("connecting");
@@ -152,6 +197,11 @@ impl SshManager {
             .channel_open_session()
             .await
             .map_err(|e| AppError::Ssh(format!("Channel: {e}")))?;
+        if host.forward_agent {
+            if let Err(e) = channel.agent_forward(true).await {
+                tracing::warn!("requesting agent forwarding failed: {e}");
+            }
+        }
         if pty {
             channel
                 .request_pty(true, "xterm-256color", 120, 34, 0, 0, &[])

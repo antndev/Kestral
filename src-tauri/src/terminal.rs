@@ -111,6 +111,11 @@ pub async fn ssh_open_shell(
             return Err(err);
         }
     };
+    if host.forward_agent {
+        if let Err(e) = channel.agent_forward(true).await {
+            tracing::warn!("requesting agent forwarding failed: {e}");
+        }
+    }
     if let Err(e) = channel
         .request_pty(true, "xterm-256color", cols.max(1), rows.max(1), 0, 0, &[])
         .await

@@ -256,6 +256,7 @@ impl KestralMcp {
             auth,
             ai_policy: AiPolicy::Locked,
             ai_file_policy: AiPolicy::Locked,
+            forward_agent: false,
         };
         match self.services.hosts.add(new) {
             Ok(h) => {
@@ -327,6 +328,7 @@ impl KestralMcp {
             } else {
                 existing.ai_file_policy
             },
+            forward_agent: existing.forward_agent,
         };
         match self.services.hosts.update(updated.clone()) {
             Ok(()) => {

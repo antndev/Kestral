@@ -1100,6 +1100,7 @@ function HostSheet({
   const [port, setPort] = useState(host?.port ?? 22);
   const [username, setUsername] = useState(host?.username ?? "");
   const [authKind, setAuthKind] = useState<"password" | "key" | "agent">(host?.auth.kind ?? "key");
+  const [forwardAgent, setForwardAgent] = useState(host?.forward_agent ?? false);
 
   const initialSecret =
     host && (host.auth.kind === "key" || host.auth.kind === "password") ? host.auth.secret_id : NEW_SECRET;
@@ -1161,12 +1162,12 @@ function HostSheet({
       const safePort = Number.isFinite(port) ? Math.min(65535, Math.max(1, Math.trunc(port))) : 22;
       const user = username.trim() || "root";
       if (editing && host) {
-        const updated = { ...host, name, hostname, port: safePort, username: user, auth };
+        const updated = { ...host, name, hostname, port: safePort, username: user, auth, forward_agent: forwardAgent };
         await api.hostUpdate(updated);
         onUpdated(updated);
         return updated;
       }
-      return await api.hostAdd({ name, hostname, port: safePort, username: user, auth, ai_policy: "locked", ai_file_policy: "locked" });
+      return await api.hostAdd({ name, hostname, port: safePort, username: user, auth, ai_policy: "locked", ai_file_policy: "locked", forward_agent: forwardAgent });
     } catch (e) {
       setErr(errText(e));
       return null;
@@ -1298,6 +1299,30 @@ function HostSheet({
                 </LabeledField>
               </div>
             )}
+          </FormSection>
+
+          <FormSection title="Advanced">
+            <div
+              onClick={() => setForwardAgent((v) => !v)}
+              className="flex items-start gap-2.5 rounded-md border p-3 cursor-pointer hover:bg-accent/40 transition-colors"
+            >
+              <Checkbox
+                checked={forwardAgent}
+                onCheckedChange={(v) => setForwardAgent(!!v)}
+                onClick={(e) => e.stopPropagation()}
+                className="mt-0.5"
+                aria-label="Forward SSH agent"
+              />
+              <div className="min-w-0">
+                <div className="text-sm font-medium">Forward SSH agent (ForwardAgent)</div>
+                <p className="text-xs text-muted-foreground leading-relaxed mt-0.5">
+                  Lets commands on this host authenticate with the keys in your local SSH agent, for
+                  example <span className="font-mono">git push</span> to another server, without putting a
+                  private key on the host. A compromised host can use your keys while you are connected,
+                  so only turn this on for hosts you trust.
+                </p>
+              </div>
+            </div>
           </FormSection>
 
           {err && <p className="text-destructive text-sm">{err}</p>}

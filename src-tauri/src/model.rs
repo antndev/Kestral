@@ -35,6 +35,8 @@ pub struct Host {
     pub ai_policy: AiPolicy,
     #[serde(default)]
     pub ai_file_policy: AiPolicy,
+    #[serde(default)]
+    pub forward_agent: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -48,6 +50,8 @@ pub struct NewHost {
     pub ai_policy: AiPolicy,
     #[serde(default)]
     pub ai_file_policy: AiPolicy,
+    #[serde(default)]
+    pub forward_agent: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,6 +93,7 @@ impl NewHost {
             auth: self.auth,
             ai_policy: self.ai_policy,
             ai_file_policy: self.ai_file_policy,
+            forward_agent: self.forward_agent,
         }
     }
 }

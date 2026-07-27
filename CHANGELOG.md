@@ -3,6 +3,11 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.11 - 2026-07-28
+
+### Added
+- Per-host SSH agent forwarding (ForwardAgent). Off by default. When enabled, commands on that host can authenticate with the keys in your local SSH agent, for example git push to another server, without putting a private key on the host. Only enable it for hosts you trust.
+
 ## 0.1.10 - 2026-07-25
 
 ### Changed
