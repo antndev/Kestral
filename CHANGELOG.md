@@ -3,6 +3,11 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.17 - 2026-07-28
+
+### Fixed
+- A port forward bound to "localhost" no longer shows the "reachable from your network" warning. localhost and ::1 count as loopback, just like 127.0.0.1, so the tunnel stays on this machine.
+
 ## 0.1.16 - 2026-07-28
 
 ### Added

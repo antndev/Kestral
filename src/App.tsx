@@ -855,7 +855,7 @@ function HostsView({
               onToggleForward={toggleForward}
               onOpenForward={(f) => {
                 const h =
-                  f.local_host === "0.0.0.0" || f.local_host === "127.0.0.1" || !f.local_host.trim()
+                  isLoopbackBind(f.local_host) || f.local_host.trim() === "0.0.0.0"
                     ? "localhost"
                     : f.local_host.trim();
                 void openUrl(`http://${h}:${f.local_port}`);
@@ -973,9 +973,9 @@ function HostCard({
                     aria-hidden
                   />
                   <span className="font-mono text-muted-foreground truncate flex-1 min-w-0">
-                    {f.local_host && f.local_host !== "127.0.0.1"
-                      ? `${f.local_host}:${f.local_port}`
-                      : f.local_port}{" "}
+                    {isLoopbackBind(f.local_host)
+                      ? f.local_port
+                      : `${f.local_host}:${f.local_port}`}{" "}
                     → {f.remote_host}:{f.remote_port}
                   </span>
                   {on && (
@@ -1012,6 +1012,12 @@ const NEW_SECRET = "__new__";
 function clampPort(v: string): number {
   const n = parseInt(v.replace(/\D/g, ""), 10);
   return Number.isFinite(n) ? Math.min(65535, Math.max(1, n)) : 1;
+}
+
+// A local bind that stays on this machine: empty, loopback IPs, or "localhost".
+function isLoopbackBind(host: string): boolean {
+  const v = host.trim().toLowerCase();
+  return v === "" || v === "127.0.0.1" || v === "localhost" || v === "::1";
 }
 
 function FormSection({ title, children }: { title: string; children: ReactNode }) {
@@ -1490,8 +1496,7 @@ function HostSheet({
               this machine and tunnels it over SSH. Start and stop each tunnel from the host card.
             </p>
             {forwards.map((f) => {
-              const loopback =
-                f.local_host.trim() === "" || f.local_host.trim() === "127.0.0.1";
+              const loopback = isLoopbackBind(f.local_host);
               return (
                 <div key={f.id} className="rounded-md border p-3 flex flex-col gap-2.5">
                   <div className="flex items-center justify-between">

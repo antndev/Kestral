@@ -29,10 +29,14 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # Restore the dependency cache warmed on main. Tag builds cannot share
+      # caches with each other, so without this every release rebuilds the whole
+      # dependency tree from scratch. save-if is off here: main owns the cache.
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
-          cache-on-failure: true
+          shared-key: release-build
+          save-if: false
 
       - name: Install frontend dependencies
         run: npm ci

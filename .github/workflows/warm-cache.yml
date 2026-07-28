@@ -1,0 +1,48 @@
+name: Warm cache
+
+# Builds the Rust dependency tree on main so tag-triggered release builds can
+# restore the cache instead of compiling everything cold. Release runs live on
+# tag refs, which cannot share caches with one another; the default branch can,
+# so this keeps a warm cache there under the same shared-key the release uses.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src-tauri/**"
+      - "package-lock.json"
+      - ".github/workflows/warm-cache.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: warm-cache
+  cancel-in-progress: true
+
+jobs:
+  warm:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: release-build
+          cache-on-failure: true
+
+      # generate_context! embeds the frontend, so it must exist before the Rust
+      # build. Building it here also mirrors the release build exactly, so the
+      # cached dependency artifacts match.
+      - name: Build frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build release
+        run: cargo build --release --manifest-path src-tauri/Cargo.toml

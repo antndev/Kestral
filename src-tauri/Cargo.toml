@@ -1,6 +1,6 @@
 [package]
 name = "kestral"
-version = "0.1.16"
+version = "0.1.17"
 description = "SSH client with an encrypted vault and a built-in MCP server for controlled AI access"
 authors = ["antndev <antonkonig691@gmail.com>"]
 edition = "2021"
@@ -49,3 +49,15 @@ zeroize = { version = "1", features = ["derive"] }
 rand = "0.8"
 base64 = "0.22"
 subtle = "2"
+
+# Optimise for build time over the last bit of runtime speed. This is a desktop
+# SSH client, so lighter codegen and more parallel units cut CI build time a lot
+# without any noticeable difference in use.
+[profile.release]
+opt-level = 1
+codegen-units = 256
+strip = true
+
+# The KDF is deliberately CPU bound; keep it fully optimised so unlock stays fast.
+[profile.release.package.argon2]
+opt-level = 3
