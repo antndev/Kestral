@@ -2746,7 +2746,7 @@ dependencies = [
 
 [[package]]
 name = "kestral"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "argon2 0.5.3",
  "axum",
@@ -2760,6 +2760,7 @@ dependencies = [
  "schemars 1.2.1",
  "serde",
  "serde_json",
+ "signature",
  "subtle",
  "tauri",
  "tauri-build",

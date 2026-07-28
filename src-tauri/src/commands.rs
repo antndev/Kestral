@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use crate::audit::AuditEntry;
 use crate::error::{AppError, Result};
+use crate::forward::ForwardManager;
 use crate::model::{AiPolicy, Host, NewHost, NewSnippet, Snippet};
 use crate::policy::AiStatus;
 use crate::sftp::{FileEntry, SftpSessions};
@@ -570,6 +571,47 @@ pub async fn run_command_ui(
         ),
     }
     out
+}
+
+#[tauri::command]
+pub async fn forward_start(
+    state: State<'_, AppState>,
+    forwards: State<'_, ForwardManager>,
+    host_id: String,
+    forward_id: String,
+) -> Result<()> {
+    let host = state.services.hosts.get(parse_id(&host_id)?)?;
+    let fid = parse_id(&forward_id)?;
+    let fwd = host
+        .forwards
+        .iter()
+        .find(|f| f.id == fid)
+        .cloned()
+        .ok_or_else(|| AppError::NotFound(forward_id.clone()))?;
+    forwards
+        .start(&state.services.ssh, &host, &state.services.vault, &fwd)
+        .await
+}
+
+#[tauri::command]
+pub async fn forward_stop(
+    forwards: State<'_, ForwardManager>,
+    host_id: String,
+    forward_id: String,
+) -> Result<()> {
+    forwards
+        .stop(parse_id(&host_id)?, parse_id(&forward_id)?)
+        .await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn forward_active(forwards: State<'_, ForwardManager>) -> Result<Vec<String>> {
+    Ok(forwards
+        .active_ids()
+        .iter()
+        .map(|f| f.to_string())
+        .collect())
 }
 
 fn sftp_handle(

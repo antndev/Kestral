@@ -23,6 +23,19 @@ pub enum AuthMethod {
     Agent,
 }
 
+/// A local port forward (like `ssh -L`). Kestral listens on `local_port` of
+/// the loopback interface and tunnels each connection to `remote_host:remote_port`
+/// as seen from the SSH host.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortForward {
+    pub id: Uuid,
+    pub local_port: u16,
+    pub remote_host: String,
+    pub remote_port: u16,
+    #[serde(default)]
+    pub autostart: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Host {
     pub id: Uuid,
@@ -37,6 +50,11 @@ pub struct Host {
     pub ai_file_policy: AiPolicy,
     #[serde(default)]
     pub forward_agent: bool,
+    /// Vault secret IDs exposed to the in-process agent when forward_agent is on.
+    #[serde(default)]
+    pub agent_keys: Vec<String>,
+    #[serde(default)]
+    pub forwards: Vec<PortForward>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -52,6 +70,10 @@ pub struct NewHost {
     pub ai_file_policy: AiPolicy,
     #[serde(default)]
     pub forward_agent: bool,
+    #[serde(default)]
+    pub agent_keys: Vec<String>,
+    #[serde(default)]
+    pub forwards: Vec<PortForward>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +116,8 @@ impl NewHost {
             ai_policy: self.ai_policy,
             ai_file_policy: self.ai_file_policy,
             forward_agent: self.forward_agent,
+            agent_keys: self.agent_keys,
+            forwards: self.forwards,
         }
     }
 }

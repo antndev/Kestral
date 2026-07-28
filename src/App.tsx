@@ -11,6 +11,8 @@ import {
   Cpu,
   Lock,
   Plus,
+  ArrowRight,
+  ArrowUpRight,
   Search,
   Pencil,
   Trash2,
@@ -97,10 +99,12 @@ import type {
   CommandOutput,
   AuthMethod,
   Host,
+  PortForward,
   SecretKind,
   SecretMeta,
   Snippet,
 } from "./api";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { SshTerminal } from "./SshTerminal";
 import { SftpBrowser } from "./SftpBrowser";
 import { usePrefs, THEMES } from "./lib/prefs";
@@ -766,6 +770,47 @@ function HostsView({
     refresh();
   }, [refresh]);
 
+  const [activeForwards, setActiveForwards] = useState<Set<string>>(new Set());
+  const [fwdErr, setFwdErr] = useState<Record<string, string>>({});
+  const refreshActive = useCallback(async () => {
+    try {
+      setActiveForwards(new Set(await api.forwardActive()));
+    } catch {
+      /* vault locked; try again on the next tick */
+    }
+  }, []);
+  useEffect(() => {
+    refreshActive();
+    const iv = setInterval(refreshActive, 3000);
+    return () => clearInterval(iv);
+  }, [refreshActive]);
+
+  const autostarted = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const h of hosts) {
+      for (const f of h.forwards) {
+        if (f.autostart && !autostarted.current.has(f.id)) {
+          autostarted.current.add(f.id);
+          api.forwardStart(h.id, f.id).then(refreshActive).catch(() => {});
+        }
+      }
+    }
+  }, [hosts, refreshActive]);
+
+  const toggleForward = useCallback(
+    async (host: Host, f: PortForward, isActive: boolean) => {
+      setFwdErr((e) => ({ ...e, [f.id]: "" }));
+      try {
+        if (isActive) await api.forwardStop(host.id, f.id);
+        else await api.forwardStart(host.id, f.id);
+      } catch (e) {
+        setFwdErr((prev) => ({ ...prev, [f.id]: errText(e) }));
+      }
+      refreshActive();
+    },
+    [refreshActive],
+  );
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return hosts;
@@ -806,6 +851,10 @@ function HostsView({
             <HostCard
               key={h.id}
               host={h}
+              active={activeForwards}
+              errors={fwdErr}
+              onToggleForward={toggleForward}
+              onOpenForward={(f) => void openUrl(`http://localhost:${f.local_port}`)}
               onConnect={() => onOpen(h)}
               onSftp={() => onOpenSftp(h)}
               onEdit={() => setPanel(h)}
@@ -851,12 +900,20 @@ function HostsView({
 
 function HostCard({
   host,
+  active,
+  errors,
+  onToggleForward,
+  onOpenForward,
   onConnect,
   onSftp,
   onEdit,
   onDelete,
 }: {
   host: Host;
+  active: Set<string>;
+  errors: Record<string, string>;
+  onToggleForward: (host: Host, f: PortForward, isActive: boolean) => void;
+  onOpenForward: (f: PortForward) => void;
   onConnect: () => void;
   onSftp: () => void;
   onEdit: () => void;
@@ -894,11 +951,60 @@ function HostCard({
           <Folder className="size-4" /> SFTP
         </Button>
       </div>
+
+      {host.forwards.length > 0 && (
+        <div className="flex flex-col gap-1.5 border-t pt-2.5">
+          {host.forwards.map((f) => {
+            const on = active.has(f.id);
+            const err = errors[f.id];
+            return (
+              <div key={f.id} className="flex flex-col gap-0.5">
+                <div className="flex items-center gap-2 text-xs">
+                  <span
+                    className={
+                      "size-2 rounded-full shrink-0 " +
+                      (on ? "bg-emerald-500" : "bg-muted-foreground/40")
+                    }
+                    aria-hidden
+                  />
+                  <span className="font-mono text-muted-foreground truncate flex-1 min-w-0">
+                    {f.local_port} → {f.remote_host}:{f.remote_port}
+                  </span>
+                  {on && (
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={(e) => { e.stopPropagation(); onOpenForward(f); }}
+                      aria-label="Open in browser"
+                    >
+                      <ArrowUpRight className="size-4" />
+                    </Button>
+                  )}
+                  <Button
+                    variant={on ? "secondary" : "ghost"}
+                    size="sm"
+                    className="h-6 px-2"
+                    onClick={(e) => { e.stopPropagation(); onToggleForward(host, f, on); }}
+                  >
+                    {on ? "Stop" : "Start"}
+                  </Button>
+                </div>
+                {err && <span className="text-[11px] text-destructive pl-4">{err}</span>}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
 
 const NEW_SECRET = "__new__";
+
+function clampPort(v: string): number {
+  const n = parseInt(v.replace(/\D/g, ""), 10);
+  return Number.isFinite(n) ? Math.min(65535, Math.max(1, n)) : 1;
+}
 
 function FormSection({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -1101,6 +1207,19 @@ function HostSheet({
   const [username, setUsername] = useState(host?.username ?? "");
   const [authKind, setAuthKind] = useState<"password" | "key" | "agent">(host?.auth.kind ?? "key");
   const [forwardAgent, setForwardAgent] = useState(host?.forward_agent ?? false);
+  const [agentKeys, setAgentKeys] = useState<string[]>(host?.agent_keys ?? []);
+  const toggleAgentKey = (id: string) =>
+    setAgentKeys((cur) => (cur.includes(id) ? cur.filter((k) => k !== id) : [...cur, id]));
+
+  const [forwards, setForwards] = useState<PortForward[]>(host?.forwards ?? []);
+  const addForward = () =>
+    setForwards((cur) => [
+      ...cur,
+      { id: crypto.randomUUID(), local_port: 8080, remote_host: "localhost", remote_port: 8080, autostart: false },
+    ]);
+  const patchForward = (id: string, patch: Partial<PortForward>) =>
+    setForwards((cur) => cur.map((f) => (f.id === id ? { ...f, ...patch } : f)));
+  const removeForward = (id: string) => setForwards((cur) => cur.filter((f) => f.id !== id));
 
   const initialSecret =
     host && (host.auth.kind === "key" || host.auth.kind === "password") ? host.auth.secret_id : NEW_SECRET;
@@ -1162,12 +1281,12 @@ function HostSheet({
       const safePort = Number.isFinite(port) ? Math.min(65535, Math.max(1, Math.trunc(port))) : 22;
       const user = username.trim() || "root";
       if (editing && host) {
-        const updated = { ...host, name, hostname, port: safePort, username: user, auth, forward_agent: forwardAgent };
+        const updated = { ...host, name, hostname, port: safePort, username: user, auth, forward_agent: forwardAgent, agent_keys: agentKeys, forwards };
         await api.hostUpdate(updated);
         onUpdated(updated);
         return updated;
       }
-      return await api.hostAdd({ name, hostname, port: safePort, username: user, auth, ai_policy: "locked", ai_file_policy: "locked", forward_agent: forwardAgent });
+      return await api.hostAdd({ name, hostname, port: safePort, username: user, auth, ai_policy: "locked", ai_file_policy: "locked", forward_agent: forwardAgent, agent_keys: agentKeys, forwards });
     } catch (e) {
       setErr(errText(e));
       return null;
@@ -1311,18 +1430,113 @@ function HostSheet({
                 onCheckedChange={(v) => setForwardAgent(!!v)}
                 onClick={(e) => e.stopPropagation()}
                 className="mt-0.5"
-                aria-label="Forward SSH agent"
+                aria-label="Forward keys from the vault"
               />
               <div className="min-w-0">
-                <div className="text-sm font-medium">Forward SSH agent (ForwardAgent)</div>
+                <div className="text-sm font-medium">Forward keys from the vault</div>
                 <p className="text-xs text-muted-foreground leading-relaxed mt-0.5">
-                  Lets commands on this host authenticate with the keys in your local SSH agent, for
-                  example <span className="font-mono">git push</span> to another server, without putting a
-                  private key on the host. A compromised host can use your keys while you are connected,
-                  so only turn this on for hosts you trust.
+                  Lets commands on this host authenticate with the vault keys you pick, for example{" "}
+                  <span className="font-mono">git push</span> to another server. Kestral signs each
+                  request itself, so the private key never reaches the host, and every signature is
+                  written to the audit log. Only turn this on for hosts you trust.
                 </p>
               </div>
             </div>
+
+            {forwardAgent && (
+              <div className="rounded-md border p-3 flex flex-col gap-1.5">
+                <div className="text-xs font-medium text-muted-foreground mb-0.5">Keys to expose</div>
+                {keyIds.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    No keys in the vault yet. Add one in the Keychain first.
+                  </p>
+                ) : (
+                  keyIds.map((id) => (
+                    <div
+                      key={id}
+                      onClick={() => toggleAgentKey(id)}
+                      className="flex items-center gap-2.5 rounded-md px-1.5 py-1 cursor-pointer hover:bg-accent/40 transition-colors"
+                    >
+                      <Checkbox
+                        checked={agentKeys.includes(id)}
+                        onCheckedChange={() => toggleAgentKey(id)}
+                        onClick={(e) => e.stopPropagation()}
+                        aria-label={`Expose ${id}`}
+                      />
+                      <span className="text-sm font-mono truncate">{id}</span>
+                    </div>
+                  ))
+                )}
+                {keyIds.length > 0 && agentKeys.length === 0 && (
+                  <p className="text-xs text-amber-600 dark:text-amber-500 mt-0.5">
+                    Pick at least one key, otherwise nothing is forwarded.
+                  </p>
+                )}
+              </div>
+            )}
+          </FormSection>
+
+          <FormSection title="Port forwards">
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              Reach a service that only listens locally on the host. Kestral binds the local port on
+              this machine and tunnels it over SSH. Start and stop each tunnel from the host card.
+            </p>
+            {forwards.map((f) => (
+              <div key={f.id} className="rounded-md border p-3 flex flex-col gap-2.5">
+                <div className="flex items-center gap-2">
+                  <Input
+                    inputMode="numeric"
+                    value={String(f.local_port)}
+                    onChange={(e) =>
+                      patchForward(f.id, { local_port: clampPort(e.target.value) })
+                    }
+                    className="w-20 text-center"
+                    aria-label="Local port"
+                  />
+                  <ArrowRight className="size-4 text-muted-foreground shrink-0" />
+                  <Input
+                    value={f.remote_host}
+                    onChange={(e) => patchForward(f.id, { remote_host: e.target.value })}
+                    placeholder="localhost"
+                    className="flex-1 min-w-0"
+                    aria-label="Remote host"
+                  />
+                  <span className="text-muted-foreground">:</span>
+                  <Input
+                    inputMode="numeric"
+                    value={String(f.remote_port)}
+                    onChange={(e) =>
+                      patchForward(f.id, { remote_port: clampPort(e.target.value) })
+                    }
+                    className="w-20 text-center"
+                    aria-label="Remote port"
+                  />
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => removeForward(f.id)}
+                    aria-label="Remove forward"
+                  >
+                    <Trash2 className="size-4" />
+                  </Button>
+                </div>
+                <div
+                  onClick={() => patchForward(f.id, { autostart: !f.autostart })}
+                  className="flex items-center gap-2 cursor-pointer text-xs text-muted-foreground"
+                >
+                  <Checkbox
+                    checked={f.autostart}
+                    onCheckedChange={(v) => patchForward(f.id, { autostart: !!v })}
+                    onClick={(e) => e.stopPropagation()}
+                    aria-label="Start automatically"
+                  />
+                  Start automatically after unlock
+                </div>
+              </div>
+            ))}
+            <Button variant="secondary" size="sm" onClick={addForward} className="self-start">
+              <Plus className="size-4" /> Add forward
+            </Button>
           </FormSection>
 
           {err && <p className="text-destructive text-sm">{err}</p>}

@@ -8,6 +8,14 @@ export type AuthMethod =
   | { kind: "key"; secret_id: string }
   | { kind: "agent" };
 
+export interface PortForward {
+  id: string;
+  local_port: number;
+  remote_host: string;
+  remote_port: number;
+  autostart: boolean;
+}
+
 export interface Host {
   id: string;
   name: string;
@@ -18,6 +26,8 @@ export interface Host {
   ai_policy: AiPolicy;
   ai_file_policy: AiPolicy;
   forward_agent: boolean;
+  agent_keys: string[];
+  forwards: PortForward[];
 }
 
 export interface NewHost {
@@ -29,6 +39,8 @@ export interface NewHost {
   ai_policy: AiPolicy;
   ai_file_policy: AiPolicy;
   forward_agent: boolean;
+  agent_keys: string[];
+  forwards: PortForward[];
 }
 
 export interface FileEntry {
@@ -124,6 +136,12 @@ export const hostSetPolicy = (id: string, policy: AiPolicy) =>
   invoke<void>("host_set_policy", { id, policy });
 export const hostSetFilePolicy = (id: string, policy: AiPolicy) =>
   invoke<void>("host_set_file_policy", { id, policy });
+
+export const forwardStart = (hostId: string, forwardId: string) =>
+  invoke<void>("forward_start", { hostId, forwardId });
+export const forwardStop = (hostId: string, forwardId: string) =>
+  invoke<void>("forward_stop", { hostId, forwardId });
+export const forwardActive = () => invoke<string[]>("forward_active");
 
 export const sftpOpen = (id: string, hostId: string) =>
   invoke<string>("sftp_open", { id, hostId });

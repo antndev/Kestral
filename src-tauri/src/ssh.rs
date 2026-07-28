@@ -7,6 +7,8 @@ use russh::keys::{decode_secret_key, PrivateKeyWithHashAlg};
 use russh::ChannelMsg;
 use serde::Serialize;
 
+use crate::agent::AgentContext;
+use crate::audit::AuditLog;
 use crate::error::{AppError, Result};
 use crate::model::{AuthMethod, Host};
 use crate::vault::{SecretStore, Vault};
@@ -23,39 +25,7 @@ pub struct ClientHandler {
     host: String,
     port: u16,
     key_changed: Arc<std::sync::atomic::AtomicBool>,
-    forward_agent: bool,
-}
-
-async fn proxy_agent(channel: russh::Channel<client::Msg>) {
-    let mut stream = channel.into_stream();
-    #[cfg(windows)]
-    {
-        use tokio::net::windows::named_pipe::ClientOptions;
-        match ClientOptions::new().open(r"\\.\pipe\openssh-ssh-agent") {
-            Ok(mut agent) => {
-                if let Err(e) = tokio::io::copy_bidirectional(&mut stream, &mut agent).await {
-                    tracing::debug!("agent forward channel closed: {e}");
-                }
-            }
-            Err(e) => {
-                tracing::warn!("no local ssh agent at \\\\.\\pipe\\openssh-ssh-agent: {e}");
-            }
-        }
-    }
-    #[cfg(unix)]
-    {
-        match std::env::var("SSH_AUTH_SOCK") {
-            Ok(sock) => match tokio::net::UnixStream::connect(&sock).await {
-                Ok(mut agent) => {
-                    if let Err(e) = tokio::io::copy_bidirectional(&mut stream, &mut agent).await {
-                        tracing::debug!("agent forward channel closed: {e}");
-                    }
-                }
-                Err(e) => tracing::warn!("cannot connect to SSH_AUTH_SOCK {sock}: {e}"),
-            },
-            Err(_) => tracing::warn!("agent forwarding requested but SSH_AUTH_SOCK is not set"),
-        }
-    }
+    agent: Option<Arc<AgentContext>>,
 }
 
 impl client::Handler for ClientHandler {
@@ -105,18 +75,20 @@ impl client::Handler for ClientHandler {
         channel: russh::Channel<client::Msg>,
         _session: &mut client::Session,
     ) -> std::result::Result<(), Self::Error> {
-        if self.forward_agent {
-            tokio::spawn(proxy_agent(channel));
+        if let Some(ctx) = &self.agent {
+            tokio::spawn(crate::agent::serve(channel.into_stream(), ctx.clone()));
         }
         Ok(())
     }
 }
 
-pub struct SshManager {}
+pub struct SshManager {
+    audit: Arc<AuditLog>,
+}
 
 impl SshManager {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(audit: Arc<AuditLog>) -> Self {
+        Self { audit }
     }
 
     pub async fn connect(
@@ -146,7 +118,7 @@ impl SshManager {
             host: host.hostname.clone(),
             port: host.port,
             key_changed: key_changed.clone(),
-            forward_agent: host.forward_agent,
+            agent: AgentContext::build(host, vault, self.audit.clone()),
         };
 
         on_stage("connecting");
@@ -304,12 +276,6 @@ impl SshManager {
                 "Agent login is not implemented yet (Pageant/Named Pipe on Windows)".into(),
             )),
         }
-    }
-}
-
-impl Default for SshManager {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

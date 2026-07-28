@@ -244,6 +244,8 @@ mod tests {
             ai_policy: AiPolicy::Locked,
             ai_file_policy: AiPolicy::Locked,
             forward_agent: false,
+            agent_keys: Vec::new(),
+            forwards: Vec::new(),
         };
 
         store.add(mk("prod")).unwrap();

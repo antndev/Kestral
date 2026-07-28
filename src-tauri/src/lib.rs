@@ -1,7 +1,9 @@
+mod agent;
 mod approval;
 mod audit;
 mod commands;
 mod error;
+mod forward;
 mod hosts;
 mod mcp;
 mod model;
@@ -81,16 +83,17 @@ pub fn run() {
             let vault_path = base_dir.join("vault.json");
 
             let vault = Arc::new(vault::Vault::new(vault_path));
+            let audit = Arc::new(audit::AuditLog::new(
+                base_dir.join("audit.log"),
+                vault.clone(),
+            ));
             let services = Services {
                 vault: vault.clone(),
                 hosts: Arc::new(hosts::HostStore::new(base_dir.join("hosts.json"), vault.clone())),
                 policy: Arc::new(policy::PolicyEngine::new(base_dir.join("ai_state"))),
                 approval: Arc::new(approval::ApprovalBroker::new(app.handle().clone())),
-                audit: Arc::new(audit::AuditLog::new(
-                    base_dir.join("audit.log"),
-                    vault.clone(),
-                )),
-                ssh: Arc::new(ssh::SshManager::new()),
+                audit: audit.clone(),
+                ssh: Arc::new(ssh::SshManager::new(audit.clone())),
                 snippets: Arc::new(snippets::SnippetStore::new(
                     base_dir.join("snippets.json"),
                     vault.clone(),
@@ -120,6 +123,7 @@ pub fn run() {
             });
             app.manage(terminal::Sessions::default());
             app.manage(sftp::SftpSessions::default());
+            app.manage(forward::ForwardManager::default());
 
             let mcp_handle = app.handle().clone();
             let reset_handle = app.handle().clone();
@@ -179,6 +183,9 @@ pub fn run() {
             commands::mcp_list_registrations,
             commands::mcp_remove_registration,
             commands::run_command_ui,
+            commands::forward_start,
+            commands::forward_stop,
+            commands::forward_active,
             commands::sftp_open,
             commands::sftp_list,
             commands::sftp_download,

@@ -3,6 +3,14 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.13 - 2026-07-28
+
+### Added
+- Local port forwarding per host, like `ssh -L`. Configure forwards on a host (local port to a remote host and port, usually localhost) and start or stop each one from the host card, with a live status dot and a one-click open in the browser. Reach a service that only listens locally on the remote, for example a web UI on 127.0.0.1. Listens on the loopback interface only, and optional autostart brings a tunnel up after unlock.
+
+### Changed
+- Agent forwarding now signs from the vault instead of your operating system's SSH agent. Pick which vault keys a host may use; Kestral answers the remote's sign requests itself, so the private key never reaches the host, and every signature is written to the audit log. The AI can never turn this on, but a session on a host where you enabled it can use the forwarded keys.
+
 ## 0.1.12 - 2026-07-28
 
 ### Fixed
