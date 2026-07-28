@@ -3,6 +3,11 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.14 - 2026-07-28
+
+### Fixed
+- Host cards no longer stretch to match the tallest card in their row, so a card with port forwards no longer leaves empty space at the bottom of its neighbours.
+
 ## 0.1.13 - 2026-07-28
 
 ### Added

@@ -846,7 +846,7 @@ function HostsView({
           hint={hosts.length === 0 ? "Add your first host to get started." : "Try a different search."}
         />
       ) : (
-        <div className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(240px,1fr))]">
+        <div className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(240px,1fr))] items-start">
           {filtered.map((h) => (
             <HostCard
               key={h.id}
