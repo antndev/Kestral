@@ -3,6 +3,11 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.15 - 2026-07-28
+
+### Fixed
+- Starting a port forward no longer trips over "address already in use" when autostart and a manual start race, or when a tunnel is stopped and immediately started again. Stopping now waits until the local port is actually released, starting reserves the slot so it cannot run twice, and if another program really holds the port the message says so plainly.
+
 ## 0.1.14 - 2026-07-28
 
 ### Fixed

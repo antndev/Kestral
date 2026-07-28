@@ -23,18 +23,15 @@ struct Active {
 
 #[derive(Default)]
 pub struct ForwardManager {
-    active: Mutex<HashMap<(Uuid, Uuid), Active>>,
+    // A present key means the forward is running or in the middle of starting.
+    // `None` is a reservation held while start() binds and connects, so a second
+    // start (autostart racing a click, a double tap) sees it and backs off
+    // instead of trying to bind the same port twice.
+    active: Mutex<HashMap<(Uuid, Uuid), Option<Active>>>,
 }
 
 impl ForwardManager {
-    pub fn is_active(&self, host_id: Uuid, forward_id: Uuid) -> bool {
-        self.active
-            .lock()
-            .unwrap()
-            .contains_key(&(host_id, forward_id))
-    }
-
-    /// IDs of every forward that is currently open.
+    /// IDs of every forward that is running or starting.
     pub fn active_ids(&self) -> Vec<Uuid> {
         self.active
             .lock()
@@ -51,16 +48,47 @@ impl ForwardManager {
         vault: &Arc<Vault>,
         fwd: &PortForward,
     ) -> Result<()> {
-        if self.is_active(host.id, fwd.id) {
-            return Ok(());
+        let key = (host.id, fwd.id);
+
+        // Reserve the slot atomically. If it is already taken, this start is a
+        // no-op, which is exactly what a duplicate request should do.
+        {
+            let mut map = self.active.lock().unwrap();
+            if map.contains_key(&key) {
+                return Ok(());
+            }
+            map.insert(key, None);
         }
 
-        // Bind the local port before connecting, so a port clash fails fast
-        // without leaving an SSH session behind.
+        match self.spawn(ssh, host, vault, fwd, key).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // Bind or connect failed: drop the reservation so a retry works.
+                self.active.lock().unwrap().remove(&key);
+                Err(e)
+            }
+        }
+    }
+
+    async fn spawn(
+        &self,
+        ssh: &SshManager,
+        host: &Host,
+        vault: &Arc<Vault>,
+        fwd: &PortForward,
+        key: (Uuid, Uuid),
+    ) -> Result<()> {
         let listener = TcpListener::bind(("127.0.0.1", fwd.local_port))
             .await
             .map_err(|e| {
-                AppError::Ssh(format!("local port {} is not available: {e}", fwd.local_port))
+                if e.kind() == std::io::ErrorKind::AddrInUse {
+                    AppError::Ssh(format!(
+                        "local port {} is already in use. Close whatever is using it, or pick a different local port.",
+                        fwd.local_port
+                    ))
+                } else {
+                    AppError::Ssh(format!("cannot bind local port {}: {e}", fwd.local_port))
+                }
             })?;
 
         let session = Arc::new(ssh.connect(host, vault).await?);
@@ -103,17 +131,40 @@ impl ForwardManager {
             }
         });
 
-        self.active
-            .lock()
-            .unwrap()
-            .insert((host.id, fwd.id), Active { task, session });
+        // Publish the running forward, unless it was stopped while we were
+        // starting up. In that case tear the fresh listener and session down.
+        let active = Active { task, session };
+        let orphan = {
+            let mut map = self.active.lock().unwrap();
+            match map.get_mut(&key) {
+                Some(slot) => {
+                    *slot = Some(active);
+                    None
+                }
+                None => Some(active),
+            }
+        };
+        if let Some(a) = orphan {
+            a.task.abort();
+            let _ = a.task.await;
+            let _ = a
+                .session
+                .disconnect(russh::Disconnect::ByApplication, "", "")
+                .await;
+        }
         Ok(())
     }
 
     pub async fn stop(&self, host_id: Uuid, forward_id: Uuid) {
         let removed = self.active.lock().unwrap().remove(&(host_id, forward_id));
-        if let Some(a) = removed {
+        // Some(Some(_)): running, tear it down. Some(None): still starting, and
+        // removing the reservation tells spawn() to clean up after itself.
+        if let Some(Some(a)) = removed {
             a.task.abort();
+            // Wait for the accept loop to finish so its listener is dropped and
+            // the local port is free before we return; otherwise an immediate
+            // restart could hit "address already in use".
+            let _ = a.task.await;
             let _ = a
                 .session
                 .disconnect(russh::Disconnect::ByApplication, "", "")
