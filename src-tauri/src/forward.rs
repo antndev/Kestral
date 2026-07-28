@@ -78,16 +78,27 @@ impl ForwardManager {
         fwd: &PortForward,
         key: (Uuid, Uuid),
     ) -> Result<()> {
-        let listener = TcpListener::bind(("127.0.0.1", fwd.local_port))
+        let bind_host = {
+            let h = fwd.local_host.trim();
+            if h.is_empty() {
+                "127.0.0.1"
+            } else {
+                h
+            }
+        };
+        let listener = TcpListener::bind((bind_host, fwd.local_port))
             .await
             .map_err(|e| {
                 if e.kind() == std::io::ErrorKind::AddrInUse {
                     AppError::Ssh(format!(
-                        "local port {} is already in use. Close whatever is using it, or pick a different local port.",
+                        "{bind_host}:{} is already in use. Close whatever is using it, or pick a different local port.",
                         fwd.local_port
                     ))
                 } else {
-                    AppError::Ssh(format!("cannot bind local port {}: {e}", fwd.local_port))
+                    AppError::Ssh(format!(
+                        "cannot bind {bind_host}:{}: {e}",
+                        fwd.local_port
+                    ))
                 }
             })?;
 

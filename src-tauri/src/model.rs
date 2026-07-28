@@ -23,12 +23,19 @@ pub enum AuthMethod {
     Agent,
 }
 
-/// A local port forward (like `ssh -L`). Kestral listens on `local_port` of
-/// the loopback interface and tunnels each connection to `remote_host:remote_port`
-/// as seen from the SSH host.
+fn default_local_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+/// A local port forward (like `ssh -L`). Kestral listens on `local_host:local_port`
+/// and tunnels each connection to `remote_host:remote_port` as seen from the SSH
+/// host. `local_host` defaults to loopback; set it to 0.0.0.0 or a LAN address to
+/// let other devices on the network reach the tunnel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PortForward {
     pub id: Uuid,
+    #[serde(default = "default_local_host")]
+    pub local_host: String,
     pub local_port: u16,
     pub remote_host: String,
     pub remote_port: u16,

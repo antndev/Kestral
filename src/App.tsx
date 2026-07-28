@@ -11,7 +11,6 @@ import {
   Cpu,
   Lock,
   Plus,
-  ArrowRight,
   ArrowUpRight,
   Search,
   Pencil,
@@ -854,7 +853,13 @@ function HostsView({
               active={activeForwards}
               errors={fwdErr}
               onToggleForward={toggleForward}
-              onOpenForward={(f) => void openUrl(`http://localhost:${f.local_port}`)}
+              onOpenForward={(f) => {
+                const h =
+                  f.local_host === "0.0.0.0" || f.local_host === "127.0.0.1" || !f.local_host.trim()
+                    ? "localhost"
+                    : f.local_host.trim();
+                void openUrl(`http://${h}:${f.local_port}`);
+              }}
               onConnect={() => onOpen(h)}
               onSftp={() => onOpenSftp(h)}
               onEdit={() => setPanel(h)}
@@ -968,7 +973,10 @@ function HostCard({
                     aria-hidden
                   />
                   <span className="font-mono text-muted-foreground truncate flex-1 min-w-0">
-                    {f.local_port} → {f.remote_host}:{f.remote_port}
+                    {f.local_host && f.local_host !== "127.0.0.1"
+                      ? `${f.local_host}:${f.local_port}`
+                      : f.local_port}{" "}
+                    → {f.remote_host}:{f.remote_port}
                   </span>
                   {on && (
                     <Button
@@ -1215,7 +1223,7 @@ function HostSheet({
   const addForward = () =>
     setForwards((cur) => [
       ...cur,
-      { id: crypto.randomUUID(), local_port: 8080, remote_host: "localhost", remote_port: 8080, autostart: false },
+      { id: crypto.randomUUID(), local_host: "127.0.0.1", local_port: 8080, remote_host: "localhost", remote_port: 8080, autostart: false },
     ]);
   const patchForward = (id: string, patch: Partial<PortForward>) =>
     setForwards((cur) => cur.map((f) => (f.id === id ? { ...f, ...patch } : f)));
@@ -1481,59 +1489,79 @@ function HostSheet({
               Reach a service that only listens locally on the host. Kestral binds the local port on
               this machine and tunnels it over SSH. Start and stop each tunnel from the host card.
             </p>
-            {forwards.map((f) => (
-              <div key={f.id} className="rounded-md border p-3 flex flex-col gap-2.5">
-                <div className="flex items-center gap-2">
-                  <Input
-                    inputMode="numeric"
-                    value={String(f.local_port)}
-                    onChange={(e) =>
-                      patchForward(f.id, { local_port: clampPort(e.target.value) })
-                    }
-                    className="w-20 text-center"
-                    aria-label="Local port"
-                  />
-                  <ArrowRight className="size-4 text-muted-foreground shrink-0" />
-                  <Input
-                    value={f.remote_host}
-                    onChange={(e) => patchForward(f.id, { remote_host: e.target.value })}
-                    placeholder="localhost"
-                    className="flex-1 min-w-0"
-                    aria-label="Remote host"
-                  />
-                  <span className="text-muted-foreground">:</span>
-                  <Input
-                    inputMode="numeric"
-                    value={String(f.remote_port)}
-                    onChange={(e) =>
-                      patchForward(f.id, { remote_port: clampPort(e.target.value) })
-                    }
-                    className="w-20 text-center"
-                    aria-label="Remote port"
-                  />
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={() => removeForward(f.id)}
-                    aria-label="Remove forward"
+            {forwards.map((f) => {
+              const loopback =
+                f.local_host.trim() === "" || f.local_host.trim() === "127.0.0.1";
+              return (
+                <div key={f.id} className="rounded-md border p-3 flex flex-col gap-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium text-muted-foreground">Forward</span>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => removeForward(f.id)}
+                      aria-label="Remove forward"
+                    >
+                      <Trash2 className="size-4" />
+                    </Button>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] w-12 shrink-0 text-muted-foreground">Local</span>
+                    <Input
+                      value={f.local_host}
+                      onChange={(e) => patchForward(f.id, { local_host: e.target.value })}
+                      placeholder="127.0.0.1"
+                      className="flex-1 min-w-0"
+                      aria-label="Local bind address"
+                    />
+                    <span className="text-muted-foreground">:</span>
+                    <Input
+                      inputMode="numeric"
+                      value={String(f.local_port)}
+                      onChange={(e) => patchForward(f.id, { local_port: clampPort(e.target.value) })}
+                      className="w-16 text-center"
+                      aria-label="Local port"
+                    />
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] w-12 shrink-0 text-muted-foreground">Remote</span>
+                    <Input
+                      value={f.remote_host}
+                      onChange={(e) => patchForward(f.id, { remote_host: e.target.value })}
+                      placeholder="localhost"
+                      className="flex-1 min-w-0"
+                      aria-label="Remote host"
+                    />
+                    <span className="text-muted-foreground">:</span>
+                    <Input
+                      inputMode="numeric"
+                      value={String(f.remote_port)}
+                      onChange={(e) => patchForward(f.id, { remote_port: clampPort(e.target.value) })}
+                      className="w-16 text-center"
+                      aria-label="Remote port"
+                    />
+                  </div>
+                  <div
+                    onClick={() => patchForward(f.id, { autostart: !f.autostart })}
+                    className="flex items-center gap-2 cursor-pointer text-xs text-muted-foreground"
                   >
-                    <Trash2 className="size-4" />
-                  </Button>
+                    <Checkbox
+                      checked={f.autostart}
+                      onCheckedChange={(v) => patchForward(f.id, { autostart: !!v })}
+                      onClick={(e) => e.stopPropagation()}
+                      aria-label="Start automatically"
+                    />
+                    Start automatically after unlock
+                  </div>
+                  {!loopback && (
+                    <p className="text-[11px] text-amber-600 dark:text-amber-500 leading-relaxed">
+                      Bound to {f.local_host.trim()}, so other devices on your network can reach this
+                      tunnel. Use 127.0.0.1 to keep it on this machine only.
+                    </p>
+                  )}
                 </div>
-                <div
-                  onClick={() => patchForward(f.id, { autostart: !f.autostart })}
-                  className="flex items-center gap-2 cursor-pointer text-xs text-muted-foreground"
-                >
-                  <Checkbox
-                    checked={f.autostart}
-                    onCheckedChange={(v) => patchForward(f.id, { autostart: !!v })}
-                    onClick={(e) => e.stopPropagation()}
-                    aria-label="Start automatically"
-                  />
-                  Start automatically after unlock
-                </div>
-              </div>
-            ))}
+              );
+            })}
             <Button variant="secondary" size="sm" onClick={addForward} className="self-start">
               <Plus className="size-4" /> Add forward
             </Button>

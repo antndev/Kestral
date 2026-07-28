@@ -3,6 +3,11 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.16 - 2026-07-28
+
+### Added
+- Port forwards can bind to a chosen local address, not just loopback. Leave it at 127.0.0.1 to keep a tunnel on this machine, or set 0.0.0.0 or a LAN address so other devices on your network can reach it, for example to tunnel a remote service and open it from your phone. A warning shows when a forward is exposed beyond this machine.
+
 ## 0.1.15 - 2026-07-28
 
 ### Fixed

@@ -10,6 +10,7 @@ export type AuthMethod =
 
 export interface PortForward {
   id: string;
+  local_host: string;
   local_port: number;
   remote_host: string;
   remote_port: number;
