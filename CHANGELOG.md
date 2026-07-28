@@ -3,6 +3,11 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.19 - 2026-07-28
+
+### Changed
+- Faster release builds (build configuration only), no change in behaviour: the desktop build no longer produces the unused mobile library outputs, and CI caches npm.
+
 ## 0.1.18 - 2026-07-28
 
 ### Changed

@@ -1,6 +1,6 @@
 [package]
 name = "kestral"
-version = "0.1.18"
+version = "0.1.19"
 description = "SSH client with an encrypted vault and a built-in MCP server for controlled AI access"
 authors = ["antndev <antonkonig691@gmail.com>"]
 edition = "2021"
@@ -9,7 +9,10 @@ repository = "https://github.com/antndev/Kestral"
 
 [lib]
 name = "kestral_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# Desktop only: the binary links the library as an rlib. The staticlib and
+# cdylib types are for mobile targets, and building them makes every build
+# compile this crate several times over, so drop them.
+crate-type = ["lib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
