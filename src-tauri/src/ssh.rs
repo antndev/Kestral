@@ -135,6 +135,9 @@ impl SshManager {
     ) -> Result<client::Handle<ClientHandler>> {
         let config = Arc::new(client::Config {
             inactivity_timeout: None,
+            keepalive_interval: Some(std::time::Duration::from_secs(15)),
+            keepalive_max: 8,
+            nodelay: true,
             ..Default::default()
         });
 

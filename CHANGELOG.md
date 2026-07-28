@@ -3,6 +3,12 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.12 - 2026-07-28
+
+### Fixed
+- SSH connections stay alive during idle periods. Keepalives run every 15 seconds and short interruptions are tolerated, so a session no longer drops just because the window was in the background for a while.
+- The terminal cursor blinks at a normal rate again instead of racing when the animation-speed setting is changed.
+
 ## 0.1.11 - 2026-07-28
 
 ### Added

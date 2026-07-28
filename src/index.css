@@ -99,6 +99,13 @@ html[data-anim-scaled] *:not([data-no-anim-scale])::after {
   transition-duration: calc(160ms * var(--anim-scale, 1)) !important;
 }
 
+/* Das Terminal von der Animations-Skalierung ausnehmen, sonst rast der
+   xterm-Cursor-Blink, weil die globale Regel oben seine Animationsdauer kapert. */
+html[data-anim-scaled] .xterm,
+html[data-anim-scaled] .xterm * {
+  animation-duration: 1s !important;
+}
+
 /* Radix legt das Positionierungs-Transform auf diesen Wrapper. Den niemals
    per Transition animieren, sonst gleitet das Dropdown beim Oeffnen aus der
    Ecke herein (statt am Trigger zu erscheinen). Das Ein-/Ausblenden laeuft als
