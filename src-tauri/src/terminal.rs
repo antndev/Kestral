@@ -57,6 +57,7 @@ async fn close_dead(app: &tauri::AppHandle, sessions: &Sessions, id: &str) {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn ssh_open_shell(
     app: tauri::AppHandle,
     state: State<'_, AppState>,

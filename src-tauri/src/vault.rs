@@ -79,6 +79,10 @@ struct Unlocked {
     data: BTreeMap<String, Record>,
 }
 
+/// What decrypting the vault file yields: data key, salt, the records, and a flag
+/// for whether the file was in an older format and should be re-sealed.
+type DecryptedVault = (Zeroizing<[u8; 32]>, [u8; 16], BTreeMap<String, Record>, bool);
+
 pub trait SecretStore: Send + Sync {
     fn is_unlocked(&self) -> bool;
     fn exists(&self) -> bool;
@@ -156,10 +160,7 @@ impl Vault {
         Ok(())
     }
 
-    fn decrypt_file(
-        path: &std::path::Path,
-        master: &str,
-    ) -> Result<(Zeroizing<[u8; 32]>, [u8; 16], BTreeMap<String, Record>, bool)> {
+    fn decrypt_file(path: &std::path::Path, master: &str) -> Result<DecryptedVault> {
         let raw = std::fs::read(path)?;
         let file: VaultFile = serde_json::from_slice(&raw)?;
 

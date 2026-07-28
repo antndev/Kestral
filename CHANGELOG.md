@@ -3,6 +3,11 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.18 - 2026-07-28
+
+### Changed
+- Internal code cleanup, no change in behaviour.
+
 ## 0.1.17 - 2026-07-28
 
 ### Fixed

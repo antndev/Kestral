@@ -303,7 +303,7 @@ fn append_known_host(host: &str, port: u16, key: &ssh_key::PublicKey) -> std::io
     };
     let openssh = key
         .to_openssh()
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
     let line = format!("{host_entry} {openssh}\n");
 
     let mut file = std::fs::OpenOptions::new()
