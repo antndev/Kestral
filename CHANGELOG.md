@@ -3,6 +3,11 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.21 - 2026-07-29
+
+### Fixed
+- Starting or stopping a port forward no longer changes the host card's size. The open-in-browser button keeps its space when the tunnel is off, and the start/stop button has a fixed width.
+
 ## 0.1.20 - 2026-07-29
 
 ### Changed

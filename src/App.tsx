@@ -978,20 +978,24 @@ function HostCard({
                       : `${f.local_host}:${f.local_port}`}{" "}
                     → {f.remote_host}:{f.remote_port}
                   </span>
-                  {on && (
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      onClick={(e) => { e.stopPropagation(); onOpenForward(f); }}
-                      aria-label="Open in browser"
-                    >
-                      <ArrowUpRight className="size-4" />
-                    </Button>
-                  )}
+                  {/* Always rendered, hidden when inactive, so toggling does not
+                      change the row's height or shift the layout. */}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className={"h-6 w-6 p-0 shrink-0" + (on ? "" : " invisible")}
+                    disabled={!on}
+                    tabIndex={on ? 0 : -1}
+                    aria-hidden={!on}
+                    onClick={(e) => { e.stopPropagation(); onOpenForward(f); }}
+                    aria-label="Open in browser"
+                  >
+                    <ArrowUpRight className="size-4" />
+                  </Button>
                   <Button
                     variant={on ? "secondary" : "ghost"}
                     size="sm"
-                    className="h-6 px-2"
+                    className="h-6 px-2 min-w-[3.25rem] shrink-0"
                     onClick={(e) => { e.stopPropagation(); onToggleForward(host, f, on); }}
                   >
                     {on ? "Stop" : "Start"}
