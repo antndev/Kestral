@@ -3,6 +3,11 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.20 - 2026-07-29
+
+### Changed
+- Clearer error when a port forward's local bind address does not belong to this machine. Instead of a raw OS error, it explains that the left side is where Kestral listens here (use 127.0.0.1 or 0.0.0.0) and the remote target belongs on the right side.
+
 ## 0.1.19 - 2026-07-28
 
 ### Changed

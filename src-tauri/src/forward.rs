@@ -89,16 +89,16 @@ impl ForwardManager {
         let listener = TcpListener::bind((bind_host, fwd.local_port))
             .await
             .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::AddrInUse {
-                    AppError::Ssh(format!(
+                use std::io::ErrorKind;
+                match e.kind() {
+                    ErrorKind::AddrInUse => AppError::Ssh(format!(
                         "{bind_host}:{} is already in use. Close whatever is using it, or pick a different local port.",
                         fwd.local_port
-                    ))
-                } else {
-                    AppError::Ssh(format!(
-                        "cannot bind {bind_host}:{}: {e}",
-                        fwd.local_port
-                    ))
+                    )),
+                    ErrorKind::AddrNotAvailable => AppError::Ssh(format!(
+                        "{bind_host} is not an address on this machine. The left side is where Kestral listens here, so use 127.0.0.1 (or 0.0.0.0). The remote target belongs on the right side."
+                    )),
+                    _ => AppError::Ssh(format!("cannot bind {bind_host}:{}: {e}", fwd.local_port)),
                 }
             })?;
 
