@@ -90,6 +90,14 @@ impl Services {
         let host = self.hosts.get(host_id)?;
         let host_id_s = host.id.to_string();
 
+        if self.policy.mentions_protected(command) {
+            self.trip_protected(&host.name, &host_id_s, command, command).await;
+            return Err(AppError::PathNotAllowed(
+                "this command refers to a protected path. AI access has been stopped; re-enable it yourself to continue."
+                    .into(),
+            ));
+        }
+
         match self.policy.gate(host.ai_policy) {
             Gate::Denied(reason) => {
                 self.record_denied(&host_id_s, &host.name, command, reason);
@@ -123,6 +131,24 @@ impl Services {
             }
             Gate::Allowed => self.execute_and_record(&host, command, "allowed").await,
         }
+    }
+
+    /// Kill switch: the AI tried to touch a protected path. Turn AI access off
+    /// entirely (so it cannot try another route), tell the user, and record it.
+    /// The user has to turn AI back on by hand.
+    async fn trip_protected(&self, host_name: &str, host_id: &str, action: &str, offending: &str) {
+        self.policy.disable();
+        self.approval
+            .notify_stopped(host_name.to_string(), offending.to_string());
+        self.audit.record(
+            host_id.to_string(),
+            host_name.to_string(),
+            action.to_string(),
+            "blocked",
+            None,
+            false,
+            Some("protected path; AI access stopped".to_string()),
+        );
     }
 
     fn record_denied(&self, host_id: &str, host_name: &str, command: &str, reason: DeniedReason) {
@@ -278,6 +304,16 @@ impl Services {
 
     pub async fn ai_sftp_upload(&self, host_id: Uuid, local: &str, remote: &str) -> Result<u64> {
         let action = format!("sftp upload {local} -> {remote}");
+        if self.policy.is_protected(remote) {
+            let (hid, hname) = match self.hosts.get(host_id) {
+                Ok(h) => (h.id.to_string(), h.name),
+                Err(_) => (host_id.to_string(), "unknown host".to_string()),
+            };
+            self.trip_protected(&hname, &hid, &action, remote).await;
+            return Err(AppError::PathNotAllowed(format!(
+                "'{remote}' is protected. AI access has been stopped; re-enable it yourself to continue."
+            )));
+        }
         let safe_local = confine_ai_path(&self.transfers_dir, local)?;
         let (host, decision) = self.authorize_file(host_id, &action).await?;
         let result =

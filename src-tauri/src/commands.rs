@@ -257,6 +257,17 @@ pub async fn ai_set_caps(state: State<'_, AppState>, caps: crate::policy::AiCaps
 }
 
 #[tauri::command]
+pub async fn ai_protected_list(state: State<'_, AppState>) -> Result<Vec<String>> {
+    Ok(state.services.policy.protected_paths())
+}
+
+#[tauri::command]
+pub async fn ai_set_protected(state: State<'_, AppState>, paths: Vec<String>) -> Result<()> {
+    state.services.policy.set_protected_paths(paths);
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn approval_respond(
     state: State<'_, AppState>,
     id: String,

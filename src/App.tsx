@@ -10,6 +10,7 @@ import {
   Code,
   Cpu,
   Lock,
+  ShieldAlert,
   Plus,
   ArrowUpRight,
   Search,
@@ -269,6 +270,7 @@ function Shell({ onLock }: { onLock: () => void }) {
   const [aiActive, setAiActive] = useState(false);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [dataWarnings, setDataWarnings] = useState<string[]>([]);
+  const [aiStopped, setAiStopped] = useState<{ host_name: string; path: string } | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [locking, setLocking] = useState(false);
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
@@ -320,9 +322,13 @@ function Shell({ onLock }: { onLock: () => void }) {
     const unExp = listen<string>("approval-expired", (e) => {
       setApprovals((q) => q.filter((r) => r.id !== e.payload));
     });
+    const unStop = listen<{ host_name: string; path: string }>("ai-stopped", (e) => {
+      setAiStopped(e.payload);
+    });
     return () => {
       un.then((f) => f());
       unExp.then((f) => f());
+      unStop.then((f) => f());
     };
   }, []);
 
@@ -432,6 +438,28 @@ function Shell({ onLock }: { onLock: () => void }) {
       )}
 
       {approvals[0] && <ApprovalModal req={approvals[0]} onAnswer={answerApproval} />}
+      {aiStopped && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-lg border border-destructive/50 bg-card p-5 shadow-lg flex flex-col gap-3">
+            <div className="flex items-center gap-2 text-destructive">
+              <ShieldAlert className="size-5 shrink-0" />
+              <h2 className="text-base font-semibold">AI access stopped</h2>
+            </div>
+            <p className="text-sm text-muted-foreground leading-relaxed">
+              The AI tried to touch a protected path on{" "}
+              <span className="font-medium text-foreground">{aiStopped.host_name}</span>:
+            </p>
+            <p className="text-xs font-mono bg-muted rounded px-2 py-1 break-all">{aiStopped.path}</p>
+            <p className="text-sm text-muted-foreground leading-relaxed">
+              Access was turned off so it cannot try another way. Turn it back on yourself in the AI
+              section if you want to continue.
+            </p>
+            <div className="flex justify-end">
+              <Button onClick={() => setAiStopped(null)}>Understood</Button>
+            </div>
+          </div>
+        </div>
+      )}
       {updateOpen && updateVersion && (
         <StartupUpdateDialog version={updateVersion} notes={updateNotes} onClose={() => setUpdateOpen(false)} />
       )}
@@ -2316,6 +2344,7 @@ function McpView() {
   const [status, setStatus] = useState<AiStatus | null>(null);
   const [hosts, setHosts] = useState<Host[]>([]);
   const [caps, setCaps] = useState<AiCaps | null>(null);
+  const [protectedPaths, setProtectedPaths] = useState<string[] | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [rotating, setRotating] = useState(false);
   const [connectMsg, setConnectMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -2331,6 +2360,7 @@ function McpView() {
   useEffect(() => {
     refresh();
     api.aiCaps().then(setCaps);
+    api.aiProtectedList().then(setProtectedPaths).catch(() => setProtectedPaths([]));
     api.skillInstalled().then(setSkillOk).catch(() => {});
     api.mcpListRegistrations().then(setRegs).catch(() => setRegs([]));
     const t = setInterval(() => api.aiStatus().then(setStatus), 5000);
@@ -2342,6 +2372,22 @@ function McpView() {
     const next = { ...caps, [key]: val };
     setCaps(next);
     await api.aiSetCaps(next);
+  }
+
+  const commitProtected = (list: string[]) =>
+    api.aiSetProtected(list.filter((p) => p.trim() !== "")).catch(() => {});
+  function editProtected(i: number, val: string) {
+    setProtectedPaths((cur) => (cur ? cur.map((p, idx) => (idx === i ? val : p)) : cur));
+  }
+  function addProtected() {
+    setProtectedPaths((cur) => [...(cur ?? []), ""]);
+  }
+  function removeProtected(i: number) {
+    setProtectedPaths((cur) => {
+      const next = (cur ?? []).filter((_, idx) => idx !== i);
+      commitProtected(next);
+      return next;
+    });
   }
 
   const active = status?.active ?? false;
@@ -2670,6 +2716,49 @@ function McpView() {
                 <Switch checked={caps.manage_snippets} onCheckedChange={(v) => setCap("manage_snippets", v)} aria-label="Manage scripts" />
               </SettingRow>
             </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {protectedPaths && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Protected paths</CardTitle>
+            <CardDescription>
+              Files the AI may never change. If it tries to write one, or runs a command that names
+              one, AI access is switched off at once and you have to turn it back on yourself. Matched
+              by trailing path, so <span className="font-mono">.ssh/authorized_keys</span> covers every
+              home directory.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2">
+            {protectedPaths.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No protected paths.</p>
+            ) : (
+              protectedPaths.map((p, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <Input
+                    value={p}
+                    onChange={(e) => editProtected(i, e.target.value)}
+                    onBlur={() => commitProtected(protectedPaths)}
+                    placeholder=".ssh/authorized_keys"
+                    className="flex-1 font-mono text-sm"
+                    aria-label={`Protected path ${i + 1}`}
+                  />
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => removeProtected(i)}
+                    aria-label="Remove path"
+                  >
+                    <Trash2 className="size-4" />
+                  </Button>
+                </div>
+              ))
+            )}
+            <Button variant="secondary" size="sm" onClick={addProtected} className="self-start">
+              <Plus className="size-4" /> Add path
+            </Button>
           </CardContent>
         </Card>
       )}

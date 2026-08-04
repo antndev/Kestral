@@ -90,7 +90,10 @@ pub fn run() {
             let services = Services {
                 vault: vault.clone(),
                 hosts: Arc::new(hosts::HostStore::new(base_dir.join("hosts.json"), vault.clone())),
-                policy: Arc::new(policy::PolicyEngine::new(base_dir.join("ai_state"))),
+                policy: Arc::new(policy::PolicyEngine::new(
+                    base_dir.join("ai_state"),
+                    base_dir.join("protected_paths.json"),
+                )),
                 approval: Arc::new(approval::ApprovalBroker::new(app.handle().clone())),
                 audit: audit.clone(),
                 ssh: Arc::new(ssh::SshManager::new(audit.clone())),
@@ -166,6 +169,8 @@ pub fn run() {
             commands::ai_disable,
             commands::ai_caps,
             commands::ai_set_caps,
+            commands::ai_protected_list,
+            commands::ai_set_protected,
             commands::approval_respond,
             commands::audit_list,
             commands::audit_user_command,

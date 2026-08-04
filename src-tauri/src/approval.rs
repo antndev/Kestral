@@ -14,6 +14,12 @@ pub struct ApprovalRequest {
     pub command: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct AiStopped {
+    pub host_name: String,
+    pub path: String,
+}
+
 pub struct ApprovalBroker {
     app: AppHandle,
     pending: Mutex<HashMap<String, oneshot::Sender<bool>>>,
@@ -58,5 +64,11 @@ impl ApprovalBroker {
         if let Some(tx) = self.pending.lock().unwrap().remove(id) {
             let _ = tx.send(approved);
         }
+    }
+
+    /// Tell the UI that AI access was stopped because it tried to touch a
+    /// protected path.
+    pub fn notify_stopped(&self, host_name: String, path: String) {
+        let _ = self.app.emit("ai-stopped", AiStopped { host_name, path });
     }
 }

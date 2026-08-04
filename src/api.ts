@@ -189,6 +189,8 @@ export const aiEnable = (minutes?: number) => invoke<void>("ai_enable", { minute
 export const aiDisable = () => invoke<void>("ai_disable");
 export const aiCaps = () => invoke<AiCaps>("ai_caps");
 export const aiSetCaps = (caps: AiCaps) => invoke<void>("ai_set_caps", { caps });
+export const aiProtectedList = () => invoke<string[]>("ai_protected_list");
+export const aiSetProtected = (paths: string[]) => invoke<void>("ai_set_protected", { paths });
 
 export const approvalRespond = (id: string, approved: boolean) =>
   invoke<void>("approval_respond", { id, approved });

@@ -3,6 +3,11 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.23 - 2026-08-04
+
+### Added
+- Protected paths: files the AI may never change, with `~/.ssh/authorized_keys` and the SSH client config protected by default. If the AI tries to write one over SFTP, or runs a command that names one, AI access is switched off immediately and you have to turn it back on yourself, so it cannot look for another way in. The list is editable in Settings under the AI section, matched by trailing path so a single entry covers every home directory.
+
 ## 0.1.22 - 2026-08-04
 
 ### Fixed
