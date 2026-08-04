@@ -3,6 +3,14 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.22 - 2026-08-04
+
+### Fixed
+- No white flash on startup anymore. The window paints the dark theme background before the app finishes loading.
+
+### Changed
+- Faster startup: the terminal engine loads on demand when a session or command output is first shown, rather than at launch. That cuts the initial load by about a third.
+
 ## 0.1.21 - 2026-07-29
 
 ### Fixed

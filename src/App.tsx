@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
@@ -68,8 +68,6 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Terminal as XTerm } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
 import {
   Table,
   TableHeader,
@@ -104,7 +102,15 @@ import type {
   Snippet,
 } from "./api";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { SshTerminal } from "./SshTerminal";
+// Lazy so xterm and its addons are split out of the initial bundle and only
+// load when a terminal or command output is first shown, which speeds up
+// app startup.
+const SshTerminal = lazy(() =>
+  import("./SshTerminal").then((m) => ({ default: m.SshTerminal })),
+);
+const TerminalOutput = lazy(() =>
+  import("./TerminalOutput").then((m) => ({ default: m.TerminalOutput })),
+);
 import { SftpBrowser } from "./SftpBrowser";
 import { usePrefs, THEMES } from "./lib/prefs";
 import type { Theme } from "./lib/prefs";
@@ -512,7 +518,15 @@ function Shell({ onLock }: { onLock: () => void }) {
               {t.kind === "sftp" ? (
                 <SftpBrowser tabId={t.tabId} host={t.host} active={topTab === t.tabId} />
               ) : (
-                <SshTerminal hostId={t.host.id} />
+                <Suspense
+                  fallback={
+                    <div className="flex h-full items-center justify-center">
+                      <Spinner className="size-6" />
+                    </div>
+                  }
+                >
+                  <SshTerminal hostId={t.host.id} />
+                </Suspense>
               )}
             </div>
           ))}
@@ -2161,48 +2175,6 @@ type RunResult = {
   error?: string;
 };
 
-function TerminalOutput({ text }: { text: string }) {
-  const ref = useRef<HTMLDivElement | null>(null);
-  const { termTheme, termColors } = usePrefs();
-  const rows = Math.min(24, Math.max(3, text.split(String.fromCharCode(10)).length));
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const term = new XTerm({
-      convertEol: true,
-      disableStdin: true,
-      cursorBlink: false,
-      cursorInactiveStyle: "none",
-      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-      fontSize: 12,
-      theme: terminalTheme(termTheme, termColors),
-      scrollback: 5000,
-    });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open(el);
-    try {
-      fit.fit();
-    } catch {
-    }
-    term.write(text);
-    const ro = new ResizeObserver(() => {
-      try {
-        fit.fit();
-      } catch {
-      }
-    });
-    ro.observe(el);
-    return () => {
-      ro.disconnect();
-      term.dispose();
-    };
-  }, [text, termTheme, termColors]);
-
-  return <div ref={ref} className="overflow-hidden rounded" style={{ height: rows * 16 + 8 }} />;
-}
-
 function RunResultBlock({ result }: { result: RunResult }) {
   const failed =
     result.error != null ||
@@ -2233,7 +2205,11 @@ function RunResultBlock({ result }: { result: RunResult }) {
       <div className="px-3 py-2">
         {result.pending && <p className="text-xs text-muted-foreground">waiting for the host…</p>}
         {result.error && <p className="text-xs text-destructive">{result.error}</p>}
-        {result.out?.stdout && <TerminalOutput text={result.out.stdout} />}
+        {result.out?.stdout && (
+          <Suspense fallback={<div className="h-16" />}>
+            <TerminalOutput text={result.out.stdout} />
+          </Suspense>
+        )}
         {result.out?.stderr && (
           <pre
             className={

@@ -19,6 +19,16 @@
         }
       })();
     </script>
+    <style>
+      /* Paint the theme background before the CSS bundle loads, so there is no
+         white flash while the app boots. Matches the reui --background tokens. */
+      html {
+        background: #0a0a0a;
+      }
+      html:not(.dark) {
+        background: #ffffff;
+      }
+    </style>
   </head>
 
   <body class="bg-background text-foreground">
