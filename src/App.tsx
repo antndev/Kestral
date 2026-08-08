@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
@@ -760,23 +760,45 @@ function Segmented<T extends string>({
   const h = size === "sm" ? "h-7" : "h-8";
   const count = options.length;
   const activeIndex = options.findIndex((o) => o.value === value);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const btnRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const [ind, setInd] = useState<{ left: number; width: number } | null>(null);
+
+  // Measure the active button so the highlight lines up even when options have
+  // different widths (e.g. "No limit" next to "15m"); the old translate-by-index
+  // math assumed equal columns and left the highlight hanging over its neighbour.
+  useLayoutEffect(() => {
+    const measure = () => {
+      const btn = btnRefs.current[activeIndex];
+      setInd(btn ? { left: btn.offsetLeft, width: btn.offsetWidth } : null);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    if (wrapRef.current) ro.observe(wrapRef.current);
+    return () => ro.disconnect();
+  }, [activeIndex, count]);
+
   return (
     <div
+      ref={wrapRef}
       className={`relative rounded-lg p-[3px] ${bare ? "" : "bg-muted"} ${fluid ? "grid w-full" : "inline-grid"}`}
       style={{ gridTemplateColumns: `repeat(${count}, minmax(0, 1fr))` }}
     >
-      {activeIndex >= 0 && (
+      {ind && activeIndex >= 0 && (
         <span
           aria-hidden
-          className="absolute top-[3px] bottom-[3px] left-[3px] rounded-md bg-background ring-1 ring-border shadow-sm dark:bg-accent dark:ring-white/10 transition-transform duration-200 ease-out"
-          style={{ width: `calc((100% - 6px) / ${count})`, transform: `translateX(${activeIndex * 100}%)` }}
+          className="absolute top-[3px] bottom-[3px] rounded-md bg-background ring-1 ring-border shadow-sm dark:bg-accent dark:ring-white/10 transition-all duration-200 ease-out"
+          style={{ left: ind.left, width: ind.width }}
         />
       )}
-      {options.map((o) => {
+      {options.map((o, i) => {
         const active = o.value === value;
         return (
           <button
             key={o.value}
+            ref={(el) => {
+              btnRefs.current[i] = el;
+            }}
             type="button"
             onClick={() => onChange(o.value)}
             className={`relative z-10 ${h} px-3 rounded-md text-sm font-medium text-center whitespace-nowrap transition-colors ${active ? "text-foreground" : "text-muted-foreground hover:text-foreground"}`}

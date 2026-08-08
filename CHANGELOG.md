@@ -3,6 +3,11 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.26 - 2026-08-08
+
+### Fixed
+- The segmented selectors (like the AI duration) now line up their highlight with the selected option even when options have different widths, so "No limit" no longer leaves the highlight hanging over its neighbour.
+
 ## 0.1.25 - 2026-08-08
 
 ### Changed
