@@ -144,6 +144,7 @@ const DURATIONS = [
   { id: "30", label: "30m" },
   { id: "60", label: "1h" },
   { id: "240", label: "4h" },
+  { id: "0", label: "No limit" },
 ];
 
 export default function App() {
@@ -1025,7 +1026,10 @@ function HostCard({
                   <Button
                     variant="ghost"
                     size="sm"
-                    className={"h-6 w-6 p-0 shrink-0" + (on ? "" : " invisible")}
+                    className={
+                      "h-6 w-6 p-0 shrink-0 transition-opacity " +
+                      (on ? "opacity-0 group-hover:opacity-100" : "invisible")
+                    }
                     disabled={!on}
                     tabIndex={on ? 0 : -1}
                     aria-hidden={!on}
@@ -1037,7 +1041,7 @@ function HostCard({
                   <Button
                     variant={on ? "secondary" : "ghost"}
                     size="sm"
-                    className="h-6 px-2 min-w-[3.25rem] shrink-0"
+                    className="h-6 px-2 min-w-[3.25rem] shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
                     onClick={(e) => { e.stopPropagation(); onToggleForward(host, f, on); }}
                   >
                     {on ? "Stop" : "Start"}
@@ -1647,8 +1651,75 @@ function KeychainView() {
     refresh();
   }, [refresh]);
 
+  const keys = secrets.filter((s) => s.kind === "private_key");
+  const passwords = secrets.filter((s) => s.kind === "password");
+
+  const card = (s: SecretMeta) => {
+    const isKey = s.kind === "private_key";
+    return (
+      <div
+        key={s.id}
+        className={"group relative flex items-center gap-3 rounded-lg border p-4 select-none " + CARD}
+      >
+        <div
+          className={
+            "size-10 rounded-md flex items-center justify-center shrink-0 bg-muted " +
+            (isKey ? "text-foreground" : "text-muted-foreground")
+          }
+        >
+          {isKey ? <KeyRound className="size-5" /> : <Lock className="size-5" />}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="font-medium text-sm truncate">{s.id}</div>
+          <div className="text-xs text-muted-foreground">{isKey ? "Private key" : "Password"}</div>
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={(e) => {
+              e.stopPropagation();
+              setToReveal(s);
+            }}
+            aria-label="Reveal credential"
+          >
+            <Eye className="size-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={(e) => {
+              e.stopPropagation();
+              setToDelete(s);
+            }}
+            aria-label="Delete credential"
+          >
+            <Trash2 className="size-4" />
+          </Button>
+        </div>
+      </div>
+    );
+  };
+
+  const section = (title: string, icon: ReactNode, items: SecretMeta[], empty: string) => (
+    <div className="flex flex-col gap-2.5">
+      <div className="flex items-center gap-2">
+        <span className="text-muted-foreground">{icon}</span>
+        <h2 className="text-sm font-semibold">{title}</h2>
+        <span className="text-xs text-muted-foreground">{items.length}</span>
+      </div>
+      {items.length === 0 ? (
+        <p className="text-sm text-muted-foreground pl-6">{empty}</p>
+      ) : (
+        <div className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(240px,1fr))]">
+          {items.map(card)}
+        </div>
+      )}
+    </div>
+  );
+
   return (
-    <div className="px-6 pt-5 pb-12 flex flex-col gap-5">
+    <div className="px-6 pt-5 pb-12 flex flex-col gap-6">
       <PageHeader
         title="Keychain"
         subtitle="Keys and passwords, encrypted in the vault. Hosts reference them by ID."
@@ -1662,54 +1733,10 @@ function KeychainView() {
       {secrets.length === 0 ? (
         <EmptyState icon={<KeyRound className="size-6" />} title="No credentials yet" hint="Add a key or password; hosts reference them by ID." />
       ) : (
-        <div className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(240px,1fr))]">
-          {secrets.map((s) => {
-            const isKey = s.kind === "private_key";
-            return (
-              <div
-                key={s.id}
-                className={"group relative flex items-center gap-3 rounded-lg border p-4 select-none " + CARD}
-              >
-                <div
-                  className={
-                    "size-10 rounded-md flex items-center justify-center shrink-0 bg-muted " +
-                    (isKey ? "text-foreground" : "text-muted-foreground")
-                  }
-                >
-                  {isKey ? <KeyRound className="size-5" /> : <Lock className="size-5" />}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="font-medium text-sm truncate">{s.id}</div>
-                  <div className="text-xs text-muted-foreground">{isKey ? "Private key" : "Password"}</div>
-                </div>
-                <div className="flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setToReveal(s);
-                    }}
-                    aria-label="Reveal credential"
-                  >
-                    <Eye className="size-4" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setToDelete(s);
-                    }}
-                    aria-label="Delete credential"
-                  >
-                    <Trash2 className="size-4" />
-                  </Button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        <>
+          {section("Keys", <KeyRound className="size-4" />, keys, "No keys yet.")}
+          {section("Passwords", <Lock className="size-4" />, passwords, "No passwords yet.")}
+        </>
       )}
 
       {adding && <KeychainSheet onClose={() => setAdding(false)} onSaved={refresh} />}
@@ -1945,7 +1972,9 @@ function SnippetsView() {
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [hosts, setHosts] = useState<Host[]>([]);
   const [panel, setPanel] = useState<null | "new" | Snippet>(null);
-  const [ran, setRan] = useState<{ id: string; label: string; results: RunResult[] } | null>(null);
+  const [runs, setRuns] = useState<
+    { runId: string; id: string; label: string; results: RunResult[] }[]
+  >([]);
   const [toDelete, setToDelete] = useState<Snippet | null>(null);
 
   const refresh = useCallback(async () => {
@@ -1958,29 +1987,36 @@ function SnippetsView() {
 
   const hostName = (id: string) => hosts.find((h) => h.id === id)?.name ?? id.slice(0, 8);
 
+  const clearRun = (runId: string) => setRuns((cur) => cur.filter((r) => r.runId !== runId));
+
   async function runSnippet(s: Snippet) {
+    const runId = crypto.randomUUID();
     const targets = hosts.filter((h) => s.target_host_ids.includes(h.id));
-    if (targets.length === 0) {
-      setRan({ id: s.id, label: s.label, results: [] });
-      return;
-    }
-    setRan({
-      id: s.id,
-      label: s.label,
-      results: targets.map((h) => ({ hostId: h.id, hostName: h.name, pending: true })),
-    });
+    // Prepend so a new run appears on top; earlier runs keep running in parallel.
+    setRuns((cur) => [
+      {
+        runId,
+        id: s.id,
+        label: s.label,
+        results: targets.map((h) => ({ hostId: h.id, hostName: h.name, pending: true })),
+      },
+      ...cur,
+    ]);
+    if (targets.length === 0) return;
     await Promise.all(
       targets.map(async (h) => {
         const done = (r: Partial<RunResult>) =>
-          setRan((cur) =>
-            cur == null
-              ? cur
-              : {
-                  ...cur,
-                  results: cur.results.map((x) =>
-                    x.hostId === h.id ? { ...x, pending: false, ...r } : x,
-                  ),
-                },
+          setRuns((cur) =>
+            cur.map((run) =>
+              run.runId !== runId
+                ? run
+                : {
+                    ...run,
+                    results: run.results.map((x) =>
+                      x.hostId === h.id ? { ...x, pending: false, ...r } : x,
+                    ),
+                  },
+            ),
           );
         try {
           done({ out: await api.runCommandUi(h.id, s.script, true) });
@@ -2034,27 +2070,31 @@ function SnippetsView() {
         </div>
       )}
 
-      {ran && (
-        <div className="flex flex-col gap-3">
-          <div className="flex items-center gap-2 border-t pt-4">
-            <span className="text-sm font-medium">Output · {ran.label}</span>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="ml-auto"
-              onClick={() => setRan(null)}
-              aria-label="Clear output"
-            >
-              <X className="size-4" />
-            </Button>
-          </div>
-          {ran.results.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No target hosts on this script. Open it and pick where it should run.
-            </p>
-          ) : (
-            ran.results.map((r) => <RunResultBlock key={r.hostId} result={r} />)
-          )}
+      {runs.length > 0 && (
+        <div className="flex flex-col gap-6 border-t pt-4">
+          {runs.map((run) => (
+            <div key={run.runId} className="flex flex-col gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium">Output · {run.label}</span>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="ml-auto"
+                  onClick={() => clearRun(run.runId)}
+                  aria-label="Clear output"
+                >
+                  <X className="size-4" />
+                </Button>
+              </div>
+              {run.results.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No target hosts on this script. Open it and pick where it should run.
+                </p>
+              ) : (
+                run.results.map((r) => <RunResultBlock key={r.hostId} result={r} />)
+              )}
+            </div>
+          ))}
         </div>
       )}
 
@@ -2075,7 +2115,7 @@ function SnippetsView() {
             try {
               await api.snippetDelete(toDelete.id);
             } finally {
-              setRan((cur) => (cur?.id === toDelete.id ? null : cur));
+              setRuns((cur) => cur.filter((r) => r.id !== toDelete.id));
               setToDelete(null);
               refresh();
             }
@@ -2155,7 +2195,19 @@ function SnippetSheet({
               <Input value={label} aria-invalid={(tried && !label) || undefined} onChange={(e) => setLabel(e.target.value)} placeholder="Update & reboot" />
             </LabeledField>
             <LabeledField label="Script">
-              <Input value={script} aria-invalid={(tried && !script) || undefined} onChange={(e) => setScript(e.target.value)} placeholder="sudo apt update && sudo apt upgrade -y" />
+              <textarea
+                value={script}
+                onChange={(e) => setScript(e.target.value)}
+                aria-invalid={(tried && !script) || undefined}
+                placeholder={"sudo apt update && sudo apt upgrade -y\nsudo systemctl restart myservice"}
+                spellCheck={false}
+                data-selectable
+                rows={6}
+                className={
+                  "w-full rounded-md border bg-transparent dark:bg-input/30 px-3 py-2 text-xs font-mono leading-relaxed resize-y outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] " +
+                  (tried && !script ? "border-destructive" : "")
+                }
+              />
             </LabeledField>
           </FormSection>
 
@@ -2507,8 +2559,8 @@ function McpView() {
                 {active
                   ? remaining != null
                     ? `Auto-off in ${remaining} min · ${new Date(status!.expires_at!).toLocaleTimeString()}`
-                    : "Active"
-                  : "Turn on to allow AI commands for a limited time."}
+                    : "On, no time limit"
+                  : "Turn on to allow AI commands."}
               </div>
             </div>
           </div>
@@ -2991,7 +3043,7 @@ function SettingsView() {
           >
             <span className="text-xs text-muted-foreground">Automatic</span>
           </SettingRow>
-          <SettingRow label="Default duration" hint="Preset for the auto-off timer.">
+          <SettingRow label="Default duration" hint="Preset for how long AI access stays on.">
             <div className="w-64">
               <Segmented
                 value={String(aiMinutes)}

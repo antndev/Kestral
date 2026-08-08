@@ -87,8 +87,10 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
     return v && TERMINAL_THEMES[v] ? v : DEFAULT_TERM_THEME;
   });
   const [aiMinutes, setAiMinutesState] = useState<number>(() => {
-    const v = Number(localStorage.getItem(AI_MIN_KEY));
-    return Number.isFinite(v) && v > 0 ? v : 30;
+    const raw = localStorage.getItem(AI_MIN_KEY);
+    // 0 is a valid choice (no time limit); a missing key defaults to 30.
+    const v = raw == null ? 30 : Number(raw);
+    return Number.isFinite(v) && v >= 0 ? v : 30;
   });
   const [sftpShowHidden, setSftpShowHiddenState] = useState<boolean>(
     () => localStorage.getItem(SFTP_HIDDEN_KEY) !== "false",

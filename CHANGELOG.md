@@ -3,6 +3,21 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.24 - 2026-08-08
+
+### Added
+- AI access can stay on with no automatic time limit. Pick "No limit" as the duration and it stays on until you turn it off.
+
+### Changed
+- The keychain shows keys and passwords in separate, clearly labelled sections.
+- The script editor is a proper multi-line field instead of a single line.
+- Run several scripts at once: each run gets its own output panel and they run side by side.
+- Crisper terminal text via GPU rendering where available, with proper line spacing so the bottom row is no longer clipped. Command output uses the same spacing.
+- Port-forward start and stop buttons on a host card now appear on hover, keeping the card tidy.
+
+### Fixed
+- Reconnecting a terminal after a drop or a reboot is cleaner, with a clear "Connection lost" notice and a refit once it is back.
+
 ## 0.1.23 - 2026-08-04
 
 ### Added

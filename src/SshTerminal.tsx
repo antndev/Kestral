@@ -11,6 +11,7 @@ import { terminalTheme } from "./lib/terminal-themes";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
 type Stage = "connecting" | "authenticating" | "opening-shell" | "connected" | "error" | "closed";
@@ -52,8 +53,10 @@ export function SshTerminal({ hostId }: { hostId: string }) {
 
     const term = new Terminal({
       cursorBlink: true,
-      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      fontFamily: "Consolas, ui-monospace, SFMono-Regular, Menlo, monospace",
       fontSize: 13,
+      lineHeight: 1.2,
+      scrollback: 5000,
       theme: terminalTheme(termThemeRef.current, colorsRef.current),
     });
     termRef.current = term;
@@ -65,6 +68,15 @@ export function SshTerminal({ hostId }: { hostId: string }) {
       }),
     );
     term.open(el);
+    // Crisp text via the GPU renderer. If WebGL is unavailable, xterm keeps its
+    // DOM renderer, so this is best-effort.
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => webgl.dispose());
+      term.loadAddon(webgl);
+    } catch {
+      /* no WebGL; DOM renderer stays */
+    }
 
     const paste = async () => {
       try {
@@ -158,11 +170,23 @@ export function SshTerminal({ hostId }: { hostId: string }) {
     const statusSub = listen<{ id: string; stage: Stage; detail: string }>("session-status", (e) => {
       if (!disposed && e.payload.id === sessionId) {
         setStatus({ stage: e.payload.stage, detail: e.payload.detail });
+        // Once connected the overlay is gone and the box has its final size, so
+        // refit to avoid a clipped bottom row.
+        if (e.payload.stage === "connected") {
+          requestAnimationFrame(() => {
+            try {
+              fit.fit();
+              void invoke("ssh_resize", { id: sessionId, cols: term.cols, rows: term.rows });
+            } catch {
+              /* not laid out */
+            }
+          });
+        }
       }
     });
     const closeSub = listen<string>("session-closed", (e) => {
       if (!disposed && e.payload === sessionId) {
-        term.write("\r\n\x1b[33m[Verbindung getrennt]\x1b[0m\r\n");
+        term.write("\r\n\x1b[33m[Connection lost]\x1b[0m\r\n");
         setStatus({ stage: "closed", detail: "" });
       }
     });

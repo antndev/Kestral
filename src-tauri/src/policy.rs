@@ -103,13 +103,17 @@ impl PolicyEngine {
     pub fn new(state_path: PathBuf, protected_path: PathBuf) -> Self {
         let saved = std::fs::read_to_string(&state_path).unwrap_or_default();
         let (enabled, expires_at) = if saved.trim_start().starts_with("on") {
-            let mins = saved
+            let raw = saved
                 .split_whitespace()
                 .nth(1)
                 .and_then(|s| s.parse::<i64>().ok())
-                .unwrap_or(30)
-                .clamp(1, Self::MAX_MINUTES);
-            (true, Some(Utc::now() + Duration::minutes(mins)))
+                .unwrap_or(30);
+            // 0 means no automatic time limit; stays on until turned off by hand.
+            if raw <= 0 {
+                (true, None)
+            } else {
+                (true, Some(Utc::now() + Duration::minutes(raw.clamp(1, Self::MAX_MINUTES))))
+            }
         } else {
             (false, None)
         };
@@ -173,16 +177,21 @@ impl PolicyEngine {
     }
 
     pub fn enable(&self, minutes: Option<i64>) {
-        let mins = {
+        let persisted = {
             let mut inner = self.inner.lock().unwrap();
-            let mins = minutes
-                .unwrap_or(inner.default_minutes)
-                .clamp(1, Self::MAX_MINUTES);
+            let mins = minutes.unwrap_or(inner.default_minutes);
             inner.enabled = true;
-            inner.expires_at = Some(Utc::now() + Duration::minutes(mins));
-            mins
+            // 0 or less means no automatic time limit.
+            if mins <= 0 {
+                inner.expires_at = None;
+                0
+            } else {
+                let m = mins.clamp(1, Self::MAX_MINUTES);
+                inner.expires_at = Some(Utc::now() + Duration::minutes(m));
+                m
+            }
         };
-        self.save(true, mins);
+        self.save(true, persisted);
     }
 
     pub fn disable(&self) {
@@ -195,17 +204,17 @@ impl PolicyEngine {
     }
 
     fn check_active(inner: &mut Inner) -> bool {
-        if inner.enabled {
-            match inner.expires_at {
-                Some(exp) if Utc::now() < exp => true,
-                _ => {
-                    inner.enabled = false;
-                    inner.expires_at = None;
-                    false
-                }
+        if !inner.enabled {
+            return false;
+        }
+        match inner.expires_at {
+            None => true, // no time limit, stays on until turned off
+            Some(exp) if Utc::now() < exp => true,
+            Some(_) => {
+                inner.enabled = false;
+                inner.expires_at = None;
+                false
             }
-        } else {
-            false
         }
     }
 
@@ -283,6 +292,28 @@ mod tests {
         assert!(p.mentions_protected("echo key >> ~/.ssh/authorized_keys"));
         assert!(p.mentions_protected("tee -a /root/.ssh/authorized_keys"));
         assert!(!p.mentions_protected("cat /etc/hostname"));
+    }
+
+    #[test]
+    fn no_time_limit_stays_active_and_persists() {
+        let dir = std::env::temp_dir().join(format!("kestral_pol_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = dir.join("ai_state");
+        let prot = dir.join("protected.json");
+
+        let p = PolicyEngine::new(state.clone(), prot.clone());
+        p.enable(Some(0));
+        assert!(p.is_active());
+        assert!(p.status().expires_at.is_none());
+
+        // Restored as no-limit after a restart.
+        let p2 = PolicyEngine::new(state, prot);
+        assert!(p2.is_active());
+        assert!(p2.status().expires_at.is_none());
+
+        // Turning it off by hand still works.
+        p2.disable();
+        assert!(!p2.is_active());
     }
 
     #[test]

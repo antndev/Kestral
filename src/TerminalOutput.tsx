@@ -20,8 +20,9 @@ export function TerminalOutput({ text }: { text: string }) {
       disableStdin: true,
       cursorBlink: false,
       cursorInactiveStyle: "none",
-      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      fontFamily: "Consolas, ui-monospace, SFMono-Regular, Menlo, monospace",
       fontSize: 12,
+      lineHeight: 1.2,
       theme: terminalTheme(termTheme, termColors),
       scrollback: 5000,
     });
