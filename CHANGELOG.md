@@ -3,6 +3,11 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.25 - 2026-08-08
+
+### Changed
+- The whole port-forward row on a host card now slides in only when you hover the card, so cards stay clean at rest.
+
 ## 0.1.24 - 2026-08-08
 
 ### Added

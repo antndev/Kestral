@@ -1001,7 +1001,9 @@ function HostCard({
       </div>
 
       {host.forwards.length > 0 && (
-        <div className="flex flex-col gap-1.5 border-t pt-2.5">
+        <div className="-mt-3 grid grid-rows-[0fr] group-hover:grid-rows-[1fr] transition-[grid-template-rows] duration-200 ease-out">
+          <div className="overflow-hidden">
+            <div className="flex flex-col gap-1.5 border-t pt-3">
           {host.forwards.map((f) => {
             const on = active.has(f.id);
             const err = errors[f.id];
@@ -1023,13 +1025,12 @@ function HostCard({
                   </span>
                   {/* Always rendered, hidden when inactive, so toggling does not
                       change the row's height or shift the layout. */}
+                  {/* Open stays laid out but hidden when the tunnel is off, so
+                      the row keeps a stable width. */}
                   <Button
                     variant="ghost"
                     size="sm"
-                    className={
-                      "h-6 w-6 p-0 shrink-0 transition-opacity " +
-                      (on ? "opacity-0 group-hover:opacity-100" : "invisible")
-                    }
+                    className={"h-6 w-6 p-0 shrink-0 " + (on ? "" : "invisible")}
                     disabled={!on}
                     tabIndex={on ? 0 : -1}
                     aria-hidden={!on}
@@ -1041,7 +1042,7 @@ function HostCard({
                   <Button
                     variant={on ? "secondary" : "ghost"}
                     size="sm"
-                    className="h-6 px-2 min-w-[3.25rem] shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                    className="h-6 px-2 min-w-[3.25rem] shrink-0"
                     onClick={(e) => { e.stopPropagation(); onToggleForward(host, f, on); }}
                   >
                     {on ? "Stop" : "Start"}
@@ -1051,6 +1052,8 @@ function HostCard({
               </div>
             );
           })}
+            </div>
+          </div>
         </div>
       )}
     </div>
