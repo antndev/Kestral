@@ -3,6 +3,11 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.27 - 2026-08-08
+
+### Fixed
+- Hovering a host card that has port forwards no longer stretches its grid row, so the other cards in that row no longer show empty gaps. The tunnel controls float in as an overlay attached below the card instead.
+
 ## 0.1.26 - 2026-08-08
 
 ### Fixed

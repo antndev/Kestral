@@ -992,7 +992,11 @@ function HostCard({
   return (
     <div
       onDoubleClick={onConnect}
-      className={"group relative flex flex-col gap-3 rounded-lg border p-4 select-none " + CARD}
+      className={
+        "group relative flex flex-col gap-3 rounded-lg border p-4 select-none hover:z-30 " +
+        (host.forwards.length > 0 ? "group-hover:rounded-b-none " : "") +
+        CARD
+      }
     >
       <div className="absolute top-2 right-2 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
         <Button variant="ghost" size="icon-sm" onClick={(e) => { e.stopPropagation(); onEdit(); }} aria-label="Edit host">
@@ -1022,10 +1026,11 @@ function HostCard({
         </Button>
       </div>
 
+      {/* Absolute overlay so revealing the tunnels on hover never grows the grid
+          row, which would leave gaps under the other cards in that row. */}
       {host.forwards.length > 0 && (
-        <div className="-mt-3 grid grid-rows-[0fr] group-hover:grid-rows-[1fr] transition-[grid-template-rows] duration-200 ease-out">
-          <div className="overflow-hidden">
-            <div className="flex flex-col gap-1.5 border-t pt-3">
+        <div className="absolute inset-x-0 top-full z-30 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity duration-150">
+          <div className="flex flex-col gap-1.5 rounded-b-lg border border-t-0 bg-card px-4 pb-3 pt-2.5 shadow-lg">
           {host.forwards.map((f) => {
             const on = active.has(f.id);
             const err = errors[f.id];
@@ -1074,7 +1079,6 @@ function HostCard({
               </div>
             );
           })}
-            </div>
           </div>
         </div>
       )}
