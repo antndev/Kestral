@@ -3,6 +3,13 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.28 - 2026-08-09
+
+### Changed
+- Host cards now flow in independent columns. Expanding a card's tunnels on hover pushes down only the cards below it in the same column, not the whole row, so the neighbours no longer show gaps.
+- Script output stays put when you switch to another section and come back.
+- In script output, each host's log opens on hover so a run across many hosts stays compact, and the log now looks like the normal terminal.
+
 ## 0.1.27 - 2026-08-08
 
 ### Fixed

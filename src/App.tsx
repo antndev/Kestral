@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { Dispatch, SetStateAction } from "react";
 import type { ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
@@ -272,6 +273,8 @@ function Shell({ onLock }: { onLock: () => void }) {
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [dataWarnings, setDataWarnings] = useState<string[]>([]);
   const [aiStopped, setAiStopped] = useState<{ host_name: string; path: string } | null>(null);
+  // Kept at this level so script output survives switching sections and back.
+  const [scriptRuns, setScriptRuns] = useState<ScriptRun[]>([]);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [locking, setLocking] = useState(false);
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
@@ -533,7 +536,7 @@ function Shell({ onLock }: { onLock: () => void }) {
               ) : section === "keychain" ? (
                 <KeychainView />
               ) : section === "snippets" ? (
-                <SnippetsView />
+                <SnippetsView runs={scriptRuns} setRuns={setScriptRuns} />
               ) : section === "mcp" ? (
                 <McpView />
               ) : (
@@ -886,6 +889,25 @@ function HostsView({
     );
   }, [hosts, query]);
 
+  // Lay the cards out in independent columns (a masonry): expanding one card on
+  // hover then only pushes the cards below it in its own column, not the whole row.
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const [colCount, setColCount] = useState(3);
+  useLayoutEffect(() => {
+    const el = gridRef.current;
+    if (!el) return;
+    const compute = () => setColCount(Math.max(1, Math.floor((el.clientWidth + 12) / (240 + 12))));
+    compute();
+    const ro = new ResizeObserver(compute);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const columns = useMemo(() => {
+    const cols: Host[][] = Array.from({ length: colCount }, () => []);
+    filtered.forEach((h, i) => cols[i % colCount].push(h));
+    return cols;
+  }, [filtered, colCount]);
+
   return (
     <div className="px-6 pt-5 pb-12 flex flex-col gap-5">
       <div className="flex items-center gap-3">
@@ -903,36 +925,42 @@ function HostsView({
         </Button>
       </div>
 
-      {filtered.length === 0 ? (
-        <EmptyState
-          icon={<Server className="size-6" />}
-          title={hosts.length === 0 ? "No hosts yet" : "No matches"}
-          hint={hosts.length === 0 ? "Add your first host to get started." : "Try a different search."}
-        />
-      ) : (
-        <div className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(240px,1fr))] items-start">
-          {filtered.map((h) => (
-            <HostCard
-              key={h.id}
-              host={h}
-              active={activeForwards}
-              errors={fwdErr}
-              onToggleForward={toggleForward}
-              onOpenForward={(f) => {
-                const h =
-                  isLoopbackBind(f.local_host) || f.local_host.trim() === "0.0.0.0"
-                    ? "localhost"
-                    : f.local_host.trim();
-                void openUrl(`http://${h}:${f.local_port}`);
-              }}
-              onConnect={() => onOpen(h)}
-              onSftp={() => onOpenSftp(h)}
-              onEdit={() => setPanel(h)}
-              onDelete={() => setToDelete(h)}
-            />
-          ))}
-        </div>
-      )}
+      <div ref={gridRef}>
+        {filtered.length === 0 ? (
+          <EmptyState
+            icon={<Server className="size-6" />}
+            title={hosts.length === 0 ? "No hosts yet" : "No matches"}
+            hint={hosts.length === 0 ? "Add your first host to get started." : "Try a different search."}
+          />
+        ) : (
+          <div className="flex gap-3 items-start">
+            {columns.map((col, ci) => (
+              <div key={ci} className="flex-1 min-w-0 flex flex-col gap-3">
+                {col.map((h) => (
+                  <HostCard
+                    key={h.id}
+                    host={h}
+                    active={activeForwards}
+                    errors={fwdErr}
+                    onToggleForward={toggleForward}
+                    onOpenForward={(f) => {
+                      const target =
+                        isLoopbackBind(f.local_host) || f.local_host.trim() === "0.0.0.0"
+                          ? "localhost"
+                          : f.local_host.trim();
+                      void openUrl(`http://${target}:${f.local_port}`);
+                    }}
+                    onConnect={() => onOpen(h)}
+                    onSftp={() => onOpenSftp(h)}
+                    onEdit={() => setPanel(h)}
+                    onDelete={() => setToDelete(h)}
+                  />
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       {panel && (
         <HostSheet
@@ -992,11 +1020,7 @@ function HostCard({
   return (
     <div
       onDoubleClick={onConnect}
-      className={
-        "group relative flex flex-col gap-3 rounded-lg border p-4 select-none hover:z-30 " +
-        (host.forwards.length > 0 ? "group-hover:rounded-b-none " : "") +
-        CARD
-      }
+      className={"group relative flex flex-col gap-3 rounded-lg border p-4 select-none " + CARD}
     >
       <div className="absolute top-2 right-2 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
         <Button variant="ghost" size="icon-sm" onClick={(e) => { e.stopPropagation(); onEdit(); }} aria-label="Edit host">
@@ -1026,11 +1050,10 @@ function HostCard({
         </Button>
       </div>
 
-      {/* Absolute overlay so revealing the tunnels on hover never grows the grid
-          row, which would leave gaps under the other cards in that row. */}
       {host.forwards.length > 0 && (
-        <div className="absolute inset-x-0 top-full z-30 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity duration-150">
-          <div className="flex flex-col gap-1.5 rounded-b-lg border border-t-0 bg-card px-4 pb-3 pt-2.5 shadow-lg">
+        <div className="-mt-3 grid grid-rows-[0fr] group-hover:grid-rows-[1fr] transition-[grid-template-rows] duration-200 ease-out">
+          <div className="overflow-hidden">
+            <div className="flex flex-col gap-1.5 border-t pt-3">
           {host.forwards.map((f) => {
             const on = active.has(f.id);
             const err = errors[f.id];
@@ -1079,6 +1102,7 @@ function HostCard({
               </div>
             );
           })}
+            </div>
           </div>
         </div>
       )}
@@ -1997,13 +2021,16 @@ function KeychainSheet({ onClose, onSaved }: { onClose: () => void; onSaved: () 
   );
 }
 
-function SnippetsView() {
+function SnippetsView({
+  runs,
+  setRuns,
+}: {
+  runs: ScriptRun[];
+  setRuns: Dispatch<SetStateAction<ScriptRun[]>>;
+}) {
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [hosts, setHosts] = useState<Host[]>([]);
   const [panel, setPanel] = useState<null | "new" | Snippet>(null);
-  const [runs, setRuns] = useState<
-    { runId: string; id: string; label: string; results: RunResult[] }[]
-  >([]);
   const [toDelete, setToDelete] = useState<Snippet | null>(null);
 
   const refresh = useCallback(async () => {
@@ -2276,6 +2303,8 @@ function SnippetSheet({
   );
 }
 
+type ScriptRun = { runId: string; id: string; label: string; results: RunResult[] };
+
 type RunResult = {
   hostId: string;
   hostName: string;
@@ -2295,9 +2324,12 @@ function RunResultBlock({ result }: { result: RunResult }) {
       : `exit ${result.out?.exit_status ?? "?"}`;
 
   return (
-    <div className="rounded-md border">
-      <div className="flex items-center gap-2 border-b px-3 py-2">
+    <div className="group rounded-md border">
+      <div className="flex items-center gap-2 px-3 py-2">
         <span className="text-sm font-medium truncate">{result.hostName}</span>
+        <span className="text-xs text-muted-foreground/60 opacity-0 group-hover:opacity-100 transition-opacity">
+          hover for output
+        </span>
         <span
           className={
             "ml-auto shrink-0 rounded px-1.5 py-0.5 text-xs " +
@@ -2311,27 +2343,36 @@ function RunResultBlock({ result }: { result: RunResult }) {
           {label}
         </span>
       </div>
-      <div className="px-3 py-2">
-        {result.pending && <p className="text-xs text-muted-foreground">waiting for the host…</p>}
-        {result.error && <p className="text-xs text-destructive">{result.error}</p>}
-        {result.out?.stdout && (
-          <Suspense fallback={<div className="h-16" />}>
-            <TerminalOutput text={result.out.stdout} />
-          </Suspense>
-        )}
-        {result.out?.stderr && (
-          <pre
-            className={
-              "mt-2 max-h-32 overflow-auto rounded p-2 text-xs font-mono whitespace-pre-wrap " +
-              (failed ? "bg-destructive/10 text-destructive" : "bg-muted text-muted-foreground")
-            }
-          >
-            {result.out.stderr}
-          </pre>
-        )}
-        {result.out && !result.out.stdout && !result.out.stderr && (
-          <p className="text-xs text-muted-foreground">No output.</p>
-        )}
+      {/* The log opens only on hover, so a run across many hosts stays compact. */}
+      <div className="grid grid-rows-[0fr] group-hover:grid-rows-[1fr] transition-[grid-template-rows] duration-200 ease-out">
+        <div className="overflow-hidden">
+          <div className="border-t">
+            {result.pending && (
+              <p className="px-3 py-2 text-xs text-muted-foreground">waiting for the host…</p>
+            )}
+            {result.error && <p className="px-3 py-2 text-xs text-destructive">{result.error}</p>}
+            {result.out?.stdout && (
+              <div className="bg-[var(--term-bg)] p-3">
+                <Suspense fallback={<div className="h-16" />}>
+                  <TerminalOutput text={result.out.stdout} />
+                </Suspense>
+              </div>
+            )}
+            {result.out?.stderr && (
+              <pre
+                className={
+                  "max-h-40 overflow-auto p-3 text-xs font-mono whitespace-pre-wrap " +
+                  (failed ? "bg-destructive/10 text-destructive" : "bg-muted text-muted-foreground")
+                }
+              >
+                {result.out.stderr}
+              </pre>
+            )}
+            {result.out && !result.out.stdout && !result.out.stderr && (
+              <p className="px-3 py-2 text-xs text-muted-foreground">No output.</p>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
