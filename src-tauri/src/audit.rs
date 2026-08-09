@@ -1,5 +1,6 @@
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
@@ -28,6 +29,9 @@ pub struct AuditLog {
     entries: Mutex<Vec<AuditEntry>>,
     path: PathBuf,
     vault: Arc<Vault>,
+    // Approximate on-disk line count, so we can compact a long-running session
+    // instead of only trimming the file at the next startup.
+    line_count: AtomicUsize,
 }
 
 impl AuditLog {
@@ -36,6 +40,7 @@ impl AuditLog {
             entries: Mutex::new(Vec::new()),
             path,
             vault,
+            line_count: AtomicUsize::new(0),
         }
     }
 
@@ -72,9 +77,10 @@ impl AuditLog {
         if total > MAX_ENTRIES {
             out.drain(0..total - MAX_ENTRIES);
         }
-        tracing::info!("{} Audit-Eintraege geladen", out.len());
+        tracing::info!("{} audit entries loaded", out.len());
         *self.entries.lock().unwrap() = out;
 
+        self.line_count.store(total, Ordering::SeqCst);
         if total > MAX_LINES {
             self.compact();
         }
@@ -112,7 +118,7 @@ impl AuditLog {
             host = %entry.host_name,
             decision = %entry.decision,
             success = entry.success,
-            "KI-Aktion"
+            "AI action"
         );
 
         self.append(&entry);
@@ -122,6 +128,13 @@ impl AuditLog {
         let len = entries.len();
         if len > MAX_ENTRIES {
             entries.drain(0..len - MAX_ENTRIES);
+        }
+        drop(entries);
+
+        // Keep the on-disk file bounded during a long-running session, not only
+        // at the next startup.
+        if self.line_count.fetch_add(1, Ordering::SeqCst) + 1 > MAX_LINES {
+            self.compact();
         }
     }
 
@@ -177,7 +190,8 @@ impl AuditLog {
         if let Err(e) = crate::util::atomic_write(&self.path, buf.as_bytes()) {
             tracing::error!("Compacting the audit log failed: {e}");
         } else {
-            tracing::info!("Audit-Log auf {} Eintraege gekuerzt", entries.len());
+            self.line_count.store(entries.len(), Ordering::SeqCst);
+            tracing::info!("audit log compacted to {} entries", entries.len());
         }
     }
 

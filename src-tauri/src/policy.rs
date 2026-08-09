@@ -78,11 +78,35 @@ fn default_protected() -> Vec<String> {
 /// segment, so `.ssh/authorized_keys` covers `/home/x/.ssh/authorized_keys` and
 /// `/root/.ssh/authorized_keys`. A directory pattern also protects everything
 /// inside it.
+/// Canonicalize a path the way the SFTP/OpenSSH server would before it opens the
+/// file: forward slashes, no leading `~/`, and no empty / `.` / `..` segments.
+/// Without this an AI could dodge the guard with `.ssh//authorized_keys` or
+/// `.ssh/./authorized_keys`, which still resolve to the real file on the host.
+fn normalize_path(p: &str) -> String {
+    let p = p.replace('\\', "/");
+    let body = p.strip_prefix("~/").unwrap_or(&p);
+    let absolute = body.starts_with('/');
+    let mut out: Vec<&str> = Vec::new();
+    for seg in body.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                out.pop();
+            }
+            s => out.push(s),
+        }
+    }
+    let joined = out.join("/");
+    if absolute {
+        format!("/{joined}")
+    } else {
+        joined
+    }
+}
+
 fn path_matches(path: &str, pattern: &str) -> bool {
-    let path = path.replace('\\', "/");
-    let path = path.trim_end_matches('/');
-    let pat = pattern.trim().replace('\\', "/");
-    let pat = pat.trim_end_matches('/');
+    let path = normalize_path(path);
+    let pat = normalize_path(pattern.trim());
     if pat.is_empty() {
         return false;
     }
@@ -101,18 +125,25 @@ impl PolicyEngine {
     const MAX_MINUTES: i64 = 24 * 60;
 
     pub fn new(state_path: PathBuf, protected_path: PathBuf) -> Self {
-        let saved = std::fs::read_to_string(&state_path).unwrap_or_default();
-        let (enabled, expires_at) = if saved.trim_start().starts_with("on") {
-            let raw = saved
-                .split_whitespace()
-                .nth(1)
-                .and_then(|s| s.parse::<i64>().ok())
-                .unwrap_or(30);
-            // 0 means no automatic time limit; stays on until turned off by hand.
-            if raw <= 0 {
+        // Persisted as an absolute expiry ("until <RFC3339>"), "forever" for no
+        // limit, or "off". Storing an absolute time means a restart neither
+        // resets the countdown nor revives an already-elapsed grant.
+        let raw = std::fs::read_to_string(&state_path).unwrap_or_default();
+        let saved = raw.trim();
+        let (enabled, expires_at) = if saved == "forever" {
+            (true, None)
+        } else if let Some(ts) = saved.strip_prefix("until ") {
+            match DateTime::parse_from_rfc3339(ts.trim()) {
+                Ok(dt) if dt.with_timezone(&Utc) > Utc::now() => (true, Some(dt.with_timezone(&Utc))),
+                _ => (false, None),
+            }
+        } else if let Some(rest) = saved.strip_prefix("on") {
+            // Back-compat with the earlier "on <minutes>" format.
+            let mins = rest.trim().parse::<i64>().unwrap_or(30);
+            if mins <= 0 {
                 (true, None)
             } else {
-                (true, Some(Utc::now() + Duration::minutes(raw.clamp(1, Self::MAX_MINUTES))))
+                (true, Some(Utc::now() + Duration::minutes(mins.clamp(1, Self::MAX_MINUTES))))
             }
         } else {
             (false, None)
@@ -169,38 +200,35 @@ impl PolicyEngine {
             .any(|p| text.contains(p))
     }
 
-    fn save(&self, on: bool, minutes: i64) {
-        let _ = std::fs::write(
-            &self.state_path,
-            if on { format!("on {minutes}") } else { "off".to_string() },
-        );
+    fn persist_state(&self, inner: &Inner) {
+        let s = if !inner.enabled {
+            "off".to_string()
+        } else if inner.expires_at.is_none() {
+            "forever".to_string()
+        } else {
+            format!("until {}", inner.expires_at.unwrap().to_rfc3339())
+        };
+        let _ = std::fs::write(&self.state_path, s);
     }
 
     pub fn enable(&self, minutes: Option<i64>) {
-        let persisted = {
-            let mut inner = self.inner.lock().unwrap();
-            let mins = minutes.unwrap_or(inner.default_minutes);
-            inner.enabled = true;
-            // 0 or less means no automatic time limit.
-            if mins <= 0 {
-                inner.expires_at = None;
-                0
-            } else {
-                let m = mins.clamp(1, Self::MAX_MINUTES);
-                inner.expires_at = Some(Utc::now() + Duration::minutes(m));
-                m
-            }
-        };
-        self.save(true, persisted);
+        let mut inner = self.inner.lock().unwrap();
+        let mins = minutes.unwrap_or(inner.default_minutes);
+        inner.enabled = true;
+        // 0 or less means no automatic time limit.
+        if mins <= 0 {
+            inner.expires_at = None;
+        } else {
+            inner.expires_at = Some(Utc::now() + Duration::minutes(mins.clamp(1, Self::MAX_MINUTES)));
+        }
+        self.persist_state(&inner);
     }
 
     pub fn disable(&self) {
-        {
-            let mut inner = self.inner.lock().unwrap();
-            inner.enabled = false;
-            inner.expires_at = None;
-        }
-        self.save(false, 0);
+        let mut inner = self.inner.lock().unwrap();
+        inner.enabled = false;
+        inner.expires_at = None;
+        self.persist_state(&inner);
     }
 
     fn check_active(inner: &mut Inner) -> bool {
@@ -218,9 +246,20 @@ impl PolicyEngine {
         }
     }
 
-    pub fn is_active(&self) -> bool {
+    /// Check whether AI is active, and if the grant just lapsed, write the off
+    /// state to disk so a restart cannot revive it.
+    fn tick(&self) -> bool {
         let mut inner = self.inner.lock().unwrap();
-        Self::check_active(&mut inner)
+        let was_enabled = inner.enabled;
+        let active = Self::check_active(&mut inner);
+        if was_enabled && !active {
+            self.persist_state(&inner);
+        }
+        active
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.tick()
     }
 
     pub fn caps(&self) -> AiCaps {
@@ -232,8 +271,8 @@ impl PolicyEngine {
     }
 
     pub fn status(&self) -> AiStatus {
-        let mut inner = self.inner.lock().unwrap();
-        let active = Self::check_active(&mut inner);
+        let active = self.tick();
+        let inner = self.inner.lock().unwrap();
         AiStatus {
             active,
             expires_at: inner.expires_at,
@@ -292,6 +331,43 @@ mod tests {
         assert!(p.mentions_protected("echo key >> ~/.ssh/authorized_keys"));
         assert!(p.mentions_protected("tee -a /root/.ssh/authorized_keys"));
         assert!(!p.mentions_protected("cat /etc/hostname"));
+    }
+
+    #[test]
+    fn normalized_path_variants_do_not_bypass_protection() {
+        let p = engine(&[".ssh/authorized_keys"]);
+        assert!(p.is_protected("/home/x/.ssh//authorized_keys"));
+        assert!(p.is_protected("/home/x/.ssh/./authorized_keys"));
+        assert!(p.is_protected("~/.ssh/authorized_keys"));
+        assert!(p.is_protected("/home/x/.ssh/../.ssh/authorized_keys"));
+        assert!(p.is_protected(".ssh/authorized_keys"));
+        assert!(!p.is_protected("/home/x/.ssh/known_hosts"));
+    }
+
+    #[test]
+    fn bounded_grant_persists_absolute_expiry() {
+        let dir = std::env::temp_dir().join(format!("kestral_pol_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = dir.join("ai_state");
+        let prot = dir.join("protected.json");
+
+        let p = PolicyEngine::new(state.clone(), prot.clone());
+        p.enable(Some(30));
+        let exp = p.status().expires_at.expect("bounded grant has an expiry");
+
+        // Reopening restores the same expiry, not a fresh full window.
+        let p2 = PolicyEngine::new(state.clone(), prot.clone());
+        assert!(p2.is_active());
+        assert_eq!(exp, p2.status().expires_at.expect("expiry restored"));
+
+        // An already-elapsed grant restores as off, never revived.
+        std::fs::write(
+            &state,
+            format!("until {}", (Utc::now() - Duration::minutes(1)).to_rfc3339()),
+        )
+        .unwrap();
+        let p3 = PolicyEngine::new(state, prot);
+        assert!(!p3.is_active());
     }
 
     #[test]

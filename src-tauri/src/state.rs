@@ -292,8 +292,27 @@ impl Services {
         result
     }
 
+    /// If AI is active and the remote path is protected, trip the kill switch and
+    /// return an error; otherwise Ok. Protected paths are off-limits to the AI for
+    /// both reads and writes. Gated on is_active so a stale MCP client cannot fire
+    /// the kill switch while AI is already off.
+    async fn guard_protected(&self, host_id: Uuid, action: &str, remote: &str) -> Result<()> {
+        if self.policy.is_active() && self.policy.is_protected(remote) {
+            let (hid, hname) = match self.hosts.get(host_id) {
+                Ok(h) => (h.id.to_string(), h.name),
+                Err(_) => (host_id.to_string(), "unknown host".to_string()),
+            };
+            self.trip_protected(&hname, &hid, action, remote).await;
+            return Err(AppError::PathNotAllowed(format!(
+                "'{remote}' is protected. AI access has been stopped; re-enable it yourself to continue."
+            )));
+        }
+        Ok(())
+    }
+
     pub async fn ai_sftp_download(&self, host_id: Uuid, remote: &str, local: &str) -> Result<u64> {
         let action = format!("sftp download {remote} -> {local}");
+        self.guard_protected(host_id, &action, remote).await?;
         let safe_local = confine_ai_path(&self.transfers_dir, local)?;
         let (host, decision) = self.authorize_file(host_id, &action).await?;
         let result =
@@ -304,16 +323,7 @@ impl Services {
 
     pub async fn ai_sftp_upload(&self, host_id: Uuid, local: &str, remote: &str) -> Result<u64> {
         let action = format!("sftp upload {local} -> {remote}");
-        if self.policy.is_protected(remote) {
-            let (hid, hname) = match self.hosts.get(host_id) {
-                Ok(h) => (h.id.to_string(), h.name),
-                Err(_) => (host_id.to_string(), "unknown host".to_string()),
-            };
-            self.trip_protected(&hname, &hid, &action, remote).await;
-            return Err(AppError::PathNotAllowed(format!(
-                "'{remote}' is protected. AI access has been stopped; re-enable it yourself to continue."
-            )));
-        }
+        self.guard_protected(host_id, &action, remote).await?;
         let safe_local = confine_ai_path(&self.transfers_dir, local)?;
         let (host, decision) = self.authorize_file(host_id, &action).await?;
         let result =

@@ -74,6 +74,17 @@ fn load_key(vault: &Arc<Vault>, id: &str) -> Result<ExposedKey> {
         .map_err(|_| AppError::Ssh("key is not valid UTF-8".into()))?;
     let key =
         decode_secret_key(text, None).map_err(|e| AppError::Ssh(format!("load key: {e}")))?;
+    // We sign with the key's default algorithm and do not honour the RSA sha2
+    // signature flags, so an RSA key would be mis-signed and rejected. Refuse to
+    // expose it rather than fail silently; ed25519 and ecdsa sign correctly.
+    if matches!(
+        key.algorithm(),
+        russh::keys::ssh_key::Algorithm::Rsa { .. }
+    ) {
+        return Err(AppError::Ssh(
+            "RSA keys are not supported by the vault agent; use an ed25519 key".into(),
+        ));
+    }
     let blob = key
         .public_key()
         .to_bytes()

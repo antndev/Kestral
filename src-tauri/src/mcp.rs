@@ -330,9 +330,25 @@ impl KestralMcp {
             } else {
                 existing.ai_file_policy
             },
-            forward_agent: existing.forward_agent,
-            agent_keys: existing.agent_keys,
-            forwards: existing.forwards,
+            // If the target changed, drop the forwarding config too, so the AI
+            // cannot repoint a host to a server it controls while keeping the
+            // vault-agent keys exposed. The user must re-enable it for the new
+            // target, exactly as the AI policy is reset.
+            forward_agent: if target_changed {
+                false
+            } else {
+                existing.forward_agent
+            },
+            agent_keys: if target_changed {
+                Vec::new()
+            } else {
+                existing.agent_keys
+            },
+            forwards: if target_changed {
+                Vec::new()
+            } else {
+                existing.forwards
+            },
         };
         match self.services.hosts.update(updated.clone()) {
             Ok(()) => {

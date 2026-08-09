@@ -203,8 +203,15 @@ pub async fn host_update(state: State<'_, AppState>, host: Host) -> Result<()> {
 }
 
 #[tauri::command]
-pub async fn host_remove(state: State<'_, AppState>, id: String) -> Result<()> {
+pub async fn host_remove(
+    state: State<'_, AppState>,
+    forwards: State<'_, ForwardManager>,
+    id: String,
+) -> Result<()> {
     let hid = parse_id(&id)?;
+    // Stop any running port forwards first, or their listeners and SSH sessions
+    // would keep running with no card left to stop them.
+    forwards.stop_host(hid).await;
     state.services.hosts.remove(hid)?;
     state.services.snippets.remove_host(hid)?;
     Ok(())

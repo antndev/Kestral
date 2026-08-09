@@ -275,6 +275,10 @@ function Shell({ onLock }: { onLock: () => void }) {
   const [aiStopped, setAiStopped] = useState<{ host_name: string; path: string } | null>(null);
   // Kept at this level so script output survives switching sections and back.
   const [scriptRuns, setScriptRuns] = useState<ScriptRun[]>([]);
+  // Forwards to autostart at most once per unlocked session. Lives in Shell (which
+  // mounts once per unlock) so navigating away from Hosts and back does not
+  // re-start a forward the user manually stopped.
+  const autostarted = useRef<Set<string>>(new Set());
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [locking, setLocking] = useState(false);
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
@@ -443,11 +447,22 @@ function Shell({ onLock }: { onLock: () => void }) {
 
       {approvals[0] && <ApprovalModal req={approvals[0]} onAnswer={answerApproval} />}
       {aiStopped && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-md rounded-lg border border-destructive/50 bg-card p-5 shadow-lg flex flex-col gap-3">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setAiStopped(null);
+          }}
+          tabIndex={-1}
+        >
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="ai-stopped-title"
+            className="w-full max-w-md rounded-lg border border-destructive/50 bg-card p-5 shadow-lg flex flex-col gap-3"
+          >
             <div className="flex items-center gap-2 text-destructive">
               <ShieldAlert className="size-5 shrink-0" />
-              <h2 className="text-base font-semibold">AI access stopped</h2>
+              <h2 id="ai-stopped-title" className="text-base font-semibold">AI access stopped</h2>
             </div>
             <p className="text-sm text-muted-foreground leading-relaxed">
               The AI tried to touch a protected path on{" "}
@@ -459,7 +474,7 @@ function Shell({ onLock }: { onLock: () => void }) {
               section if you want to continue.
             </p>
             <div className="flex justify-end">
-              <Button onClick={() => setAiStopped(null)}>Understood</Button>
+              <Button autoFocus onClick={() => setAiStopped(null)}>Understood</Button>
             </div>
           </div>
         </div>
@@ -530,7 +545,7 @@ function Shell({ onLock }: { onLock: () => void }) {
           <div className={topTab === "start" ? "absolute inset-0 overflow-y-auto" : "hidden"}>
             <div key={section} className="animate-in fade-in-0 slide-in-from-bottom-2 duration-300 ease-out">
               {section === "hosts" ? (
-                <HostsView onOpen={openSession} onOpenSftp={openSftp} onHostUpdated={onHostUpdated} onHostDeleted={onHostDeleted} />
+                <HostsView onOpen={openSession} onOpenSftp={openSftp} onHostUpdated={onHostUpdated} onHostDeleted={onHostDeleted} autostarted={autostarted} />
               ) : section === "logs" ? (
                 <LogsView />
               ) : section === "keychain" ? (
@@ -820,11 +835,13 @@ function HostsView({
   onOpenSftp,
   onHostUpdated,
   onHostDeleted,
+  autostarted,
 }: {
   onOpen: (h: Host) => void;
   onOpenSftp: (h: Host) => void;
   onHostUpdated: (h: Host) => void;
   onHostDeleted: (id: string) => void;
+  autostarted: { current: Set<string> };
 }) {
   const [hosts, setHosts] = useState<Host[]>([]);
   const [query, setQuery] = useState("");
@@ -851,7 +868,6 @@ function HostsView({
     return () => clearInterval(iv);
   }, [refreshActive]);
 
-  const autostarted = useRef<Set<string>>(new Set());
   useEffect(() => {
     for (const h of hosts) {
       for (const f of h.forwards) {
@@ -902,8 +918,11 @@ function HostsView({
     return () => ro.disconnect();
   }, []);
   const columns = useMemo(() => {
-    const cols: Host[][] = Array.from({ length: colCount }, () => []);
-    filtered.forEach((h, i) => cols[i % colCount].push(h));
+    // Never build more columns than there are hosts, otherwise empty columns
+    // show as blank gutters and the few cards get squeezed into a fraction.
+    const n = Math.max(1, Math.min(colCount, filtered.length));
+    const cols: Host[][] = Array.from({ length: n }, () => []);
+    filtered.forEach((h, i) => cols[i % n].push(h));
     return cols;
   }, [filtered, colCount]);
 
@@ -934,7 +953,7 @@ function HostsView({
         ) : (
           <div className="flex gap-3 items-start">
             {columns.map((col, ci) => (
-              <div key={ci} className="flex-1 min-w-0 flex flex-col gap-3">
+              <div key={ci} className="flex-1 min-w-0 max-w-[360px] flex flex-col gap-3">
                 {col.map((h) => (
                   <HostCard
                     key={h.id}
@@ -1021,7 +1040,7 @@ function HostCard({
       onDoubleClick={onConnect}
       className={"group relative flex flex-col gap-3 rounded-lg border p-4 select-none " + CARD}
     >
-      <div className="absolute top-2 right-2 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+      <div className="absolute top-2 right-2 flex gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
         <Button variant="ghost" size="icon-sm" onClick={(e) => { e.stopPropagation(); onEdit(); }} aria-label="Edit host">
           <Pencil className="size-4" />
         </Button>
@@ -1050,7 +1069,7 @@ function HostCard({
       </div>
 
       {host.forwards.length > 0 && (
-        <div className="-mt-3 grid grid-rows-[0fr] group-hover:grid-rows-[1fr] transition-[grid-template-rows] duration-200 ease-out">
+        <div className="-mt-3 grid grid-rows-[0fr] group-hover:grid-rows-[1fr] group-focus-within:grid-rows-[1fr] transition-[grid-template-rows] duration-200 ease-out">
           <div className="overflow-hidden">
             <div className="flex flex-col gap-1.5 border-t pt-3">
           {host.forwards.map((f) => {
@@ -1725,7 +1744,7 @@ function KeychainView() {
           <div className="font-medium text-sm truncate">{s.id}</div>
           <div className="text-xs text-muted-foreground">{isKey ? "Private key" : "Password"}</div>
         </div>
-        <div className="flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
           <Button
             variant="ghost"
             size="icon-sm"
@@ -2100,7 +2119,7 @@ function SnippetsView({
               onDoubleClick={() => runSnippet(s)}
               className={"group relative rounded-lg border p-4 cursor-pointer select-none " + CARD}
             >
-              <div className="absolute top-2 right-2 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+              <div className="absolute top-2 right-2 flex gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
                 <Button variant="ghost" size="icon-sm" onClick={(e) => { e.stopPropagation(); runSnippet(s); }} aria-label="Run script">
                   <Play className="size-4" />
                 </Button>
@@ -2326,7 +2345,7 @@ function RunResultBlock({ result }: { result: RunResult }) {
     <div className="group rounded-md border">
       <div className="flex items-center gap-2 px-3 py-2">
         <span className="text-sm font-medium truncate">{result.hostName}</span>
-        <span className="text-xs text-muted-foreground/60 opacity-0 group-hover:opacity-100 transition-opacity">
+        <span className="text-xs text-muted-foreground/60 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
           hover for output
         </span>
         <span
@@ -2343,7 +2362,7 @@ function RunResultBlock({ result }: { result: RunResult }) {
         </span>
       </div>
       {/* The log opens only on hover, so a run across many hosts stays compact. */}
-      <div className="grid grid-rows-[0fr] group-hover:grid-rows-[1fr] transition-[grid-template-rows] duration-200 ease-out">
+      <div className="grid grid-rows-[0fr] group-hover:grid-rows-[1fr] group-focus-within:grid-rows-[1fr] transition-[grid-template-rows] duration-200 ease-out">
         <div className="overflow-hidden">
           <div className="border-t">
             {result.pending && (

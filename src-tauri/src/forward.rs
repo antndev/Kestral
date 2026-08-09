@@ -21,13 +21,16 @@ struct Active {
     session: Arc<client::Handle<ClientHandler>>,
 }
 
+type ActiveMap = Arc<Mutex<HashMap<(Uuid, Uuid), Option<Active>>>>;
+
 #[derive(Default)]
 pub struct ForwardManager {
     // A present key means the forward is running or in the middle of starting.
     // `None` is a reservation held while start() binds and connects, so a second
     // start (autostart racing a click, a double tap) sees it and backs off
-    // instead of trying to bind the same port twice.
-    active: Mutex<HashMap<(Uuid, Uuid), Option<Active>>>,
+    // instead of trying to bind the same port twice. Shared (Arc) so the accept
+    // loop can drop its own entry when the SSH session dies.
+    active: ActiveMap,
 }
 
 impl ForwardManager {
@@ -105,40 +108,56 @@ impl ForwardManager {
         let session = Arc::new(ssh.connect(host, vault).await?);
 
         let loop_session = session.clone();
+        let loop_active = self.active.clone();
         let remote_host = fwd.remote_host.clone();
         let remote_port = fwd.remote_port;
         let task = tokio::spawn(async move {
             loop {
-                let (mut socket, peer) = match listener.accept().await {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::debug!("forward listener stopped: {e}");
-                        break;
+                tokio::select! {
+                    accepted = listener.accept() => {
+                        let (mut socket, peer) = match accepted {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::debug!("forward listener stopped: {e}");
+                                break;
+                            }
+                        };
+                        let session = loop_session.clone();
+                        let rhost = remote_host.clone();
+                        tokio::spawn(async move {
+                            let channel = match session
+                                .channel_open_direct_tcpip(
+                                    rhost,
+                                    remote_port as u32,
+                                    peer.ip().to_string(),
+                                    peer.port() as u32,
+                                )
+                                .await
+                            {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    tracing::warn!("opening forward channel failed: {e}");
+                                    return;
+                                }
+                            };
+                            let mut stream = channel.into_stream();
+                            if let Err(e) =
+                                tokio::io::copy_bidirectional(&mut socket, &mut stream).await
+                            {
+                                tracing::debug!("forward connection closed: {e}");
+                            }
+                        });
                     }
-                };
-                let session = loop_session.clone();
-                let rhost = remote_host.clone();
-                tokio::spawn(async move {
-                    let channel = match session
-                        .channel_open_direct_tcpip(
-                            rhost,
-                            remote_port as u32,
-                            peer.ip().to_string(),
-                            peer.port() as u32,
-                        )
-                        .await
-                    {
-                        Ok(c) => c,
-                        Err(e) => {
-                            tracing::warn!("opening forward channel failed: {e}");
-                            return;
+                    // If the SSH session dies (host reboot, dropped tunnel), free
+                    // the local port and forget this forward instead of leaking it.
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(15)) => {
+                        if loop_session.is_closed() {
+                            tracing::info!("forward SSH session closed; freeing local port");
+                            loop_active.lock().unwrap().remove(&key);
+                            break;
                         }
-                    };
-                    let mut stream = channel.into_stream();
-                    if let Err(e) = tokio::io::copy_bidirectional(&mut socket, &mut stream).await {
-                        tracing::debug!("forward connection closed: {e}");
                     }
-                });
+                }
             }
         });
 
@@ -164,6 +183,20 @@ impl ForwardManager {
                 .await;
         }
         Ok(())
+    }
+
+    /// Stop every forward for a host (used when the host is deleted).
+    pub async fn stop_host(&self, host_id: Uuid) {
+        let ids: Vec<Uuid> = {
+            let map = self.active.lock().unwrap();
+            map.keys()
+                .filter(|(h, _)| *h == host_id)
+                .map(|(_, f)| *f)
+                .collect()
+        };
+        for fid in ids {
+            self.stop(host_id, fid).await;
+        }
     }
 
     pub async fn stop(&self, host_id: Uuid, forward_id: Uuid) {

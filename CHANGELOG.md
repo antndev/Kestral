@@ -3,6 +3,19 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.30 - 2026-08-09
+
+Hardening pass from a full code review.
+
+### Fixed
+- Security: the protected-paths guard now canonicalises paths the way the SSH server does, so variants like `.ssh//authorized_keys` or `.ssh/./authorized_keys` no longer slip past it. Protected paths are off-limits to the AI for reads (SFTP download) as well as writes. Repointing a host to a new address now also clears its agent-forwarding config, so the AI cannot redirect the vault keys to another server.
+- AI access time limits are stored as an absolute expiry, so restarting the app no longer resets the countdown or silently re-enables access after the window has elapsed.
+- Port forwards free their local port and stop tracking when their SSH session dies (a host reboot), and are stopped when their host is deleted, instead of leaking.
+- Autostart forwards start once per unlocked session, not every time you revisit the Hosts view, so a tunnel you stopped by hand stays stopped.
+- The host grid no longer renders empty gutter columns when you have only a few hosts.
+- Keyboard access: hover-only controls now also reveal on focus, and the "AI access stopped" dialog is a proper alert dialog with focus, Escape and a screen-reader role.
+- The on-disk audit log is trimmed during long sessions, not only at startup. RSA keys are refused by the vault agent, which cannot sign them correctly, instead of failing silently.
+
 ## 0.1.29 - 2026-08-09
 
 ### Fixed
