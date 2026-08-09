@@ -784,8 +784,7 @@ function Segmented<T extends string>({
   return (
     <div
       ref={wrapRef}
-      className={`relative rounded-lg p-[3px] ${bare ? "" : "bg-muted"} ${fluid ? "grid w-full" : "inline-grid"}`}
-      style={{ gridTemplateColumns: `repeat(${count}, minmax(0, 1fr))` }}
+      className={`relative rounded-lg p-[3px] ${bare ? "" : "bg-muted"} ${fluid ? "flex w-full" : "inline-flex"}`}
     >
       {ind && activeIndex >= 0 && (
         <span
@@ -804,7 +803,7 @@ function Segmented<T extends string>({
             }}
             type="button"
             onClick={() => onChange(o.value)}
-            className={`relative z-10 ${h} px-3 rounded-md text-sm font-medium text-center whitespace-nowrap transition-colors ${active ? "text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            className={`relative z-10 ${h} ${fluid ? "flex-1 " : ""}px-3 rounded-md text-sm font-medium text-center whitespace-nowrap transition-colors ${active ? "text-foreground" : "text-muted-foreground hover:text-foreground"}`}
           >
             {o.label}
           </button>
@@ -3113,16 +3112,13 @@ function SettingsView() {
           >
             <span className="text-xs text-muted-foreground">Automatic</span>
           </SettingRow>
-          <SettingRow label="Default duration" hint="Preset for how long AI access stays on.">
-            <div className="w-64">
-              <Segmented
-                value={String(aiMinutes)}
-                onChange={(v) => setAiMinutes(Number(v))}
-                size="sm"
-                fluid
-                options={DURATIONS.map((d) => ({ value: d.id, label: d.label }))}
-              />
-            </div>
+          <SettingRow label="Default duration" hint="How long AI access stays on when you turn it on.">
+            <Segmented
+              value={String(aiMinutes)}
+              onChange={(v) => setAiMinutes(Number(v))}
+              size="sm"
+              options={DURATIONS.map((d) => ({ value: d.id, label: d.label }))}
+            />
           </SettingRow>
         </CardContent>
       </Card>

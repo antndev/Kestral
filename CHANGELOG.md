@@ -3,6 +3,11 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.29 - 2026-08-09
+
+### Fixed
+- The AI duration selector laid out its options so a wider label like "No limit" overflowed its slot, which meant clicking it could land on the neighbouring option (so "No limit" ended up as 4h) and the highlight looked off. Options now size to their labels, so the click, the selection and the highlight all match, and "No limit" really turns off the time limit.
+
 ## 0.1.28 - 2026-08-09
 
 ### Changed
