@@ -1,4 +1,6 @@
+use russh::ChannelMsg;
 use serde::Serialize;
+use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::State;
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -589,6 +591,76 @@ pub async fn run_command_ui(
         ),
     }
     out
+}
+
+#[derive(Serialize)]
+pub struct StreamExit {
+    pub exit_status: Option<i32>,
+    pub exit_signal: Option<String>,
+}
+
+/// Run a command and stream its output live to the frontend over `on_output`,
+/// the same way the interactive terminal does, then return the exit status. A
+/// PTY is requested so output looks exactly like a normal session.
+#[tauri::command]
+pub async fn run_command_stream(
+    state: State<'_, AppState>,
+    host_id: String,
+    command: String,
+    on_output: Channel<InvokeResponseBody>,
+) -> Result<StreamExit> {
+    let host = state.services.hosts.get(parse_id(&host_id)?)?;
+    let session = state
+        .services
+        .ssh
+        .connect(&host, &state.services.vault)
+        .await?;
+    let mut channel = session
+        .channel_open_session()
+        .await
+        .map_err(|e| AppError::Ssh(format!("Channel: {e}")))?;
+    let _ = channel
+        .request_pty(true, "xterm-256color", 120, 34, 0, 0, &[])
+        .await;
+    channel
+        .exec(true, command.as_str())
+        .await
+        .map_err(|e| AppError::Ssh(format!("exec: {e}")))?;
+
+    let mut exit_status: Option<i32> = None;
+    let mut exit_signal: Option<String> = None;
+    while let Some(msg) = channel.wait().await {
+        match msg {
+            ChannelMsg::Data { ref data } => {
+                let _ = on_output.send(InvokeResponseBody::Raw(data.to_vec()));
+            }
+            ChannelMsg::ExtendedData { ref data, ext } => {
+                if ext == 1 {
+                    let _ = on_output.send(InvokeResponseBody::Raw(data.to_vec()));
+                }
+            }
+            ChannelMsg::ExitStatus { exit_status: code } => exit_status = Some(code as i32),
+            ChannelMsg::ExitSignal { signal_name, .. } => {
+                exit_signal = Some(format!("{signal_name:?}"));
+            }
+            _ => {}
+        }
+    }
+
+    let success = exit_signal.is_none() && exit_status == Some(0);
+    state.services.audit.record(
+        host.id.to_string(),
+        host.name.clone(),
+        command.clone(),
+        "user",
+        exit_status,
+        success,
+        exit_signal.clone(),
+    );
+    Ok(StreamExit {
+        exit_status,
+        exit_signal,
+    })
 }
 
 #[tauri::command]

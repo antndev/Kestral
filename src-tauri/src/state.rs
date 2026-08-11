@@ -324,10 +324,11 @@ impl Services {
     pub async fn ai_sftp_upload(&self, host_id: Uuid, local: &str, remote: &str) -> Result<u64> {
         let action = format!("sftp upload {local} -> {remote}");
         self.guard_protected(host_id, &action, remote).await?;
-        let safe_local = confine_ai_path(&self.transfers_dir, local)?;
         let (host, decision) = self.authorize_file(host_id, &action).await?;
+        // Uploads may read from any local path; only downloads are confined to the
+        // AI transfer directory. Still gated by the per-host file policy and audited.
         let result =
-            sftp::one_shot_upload(&self.ssh, &self.vault, &host, &safe_local, remote).await;
+            sftp::one_shot_upload(&self.ssh, &self.vault, &host, Path::new(local), remote).await;
         self.audit_file(&host, &action, decision, &result);
         result
     }

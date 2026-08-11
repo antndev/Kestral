@@ -3,6 +3,7 @@ import type { Dispatch, SetStateAction } from "react";
 import type { ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
+import { Channel } from "@tauri-apps/api/core";
 import {
   Server,
   HardDrive,
@@ -14,6 +15,7 @@ import {
   ShieldAlert,
   Plus,
   ArrowUpRight,
+  ChevronRight,
   Search,
   Pencil,
   Trash2,
@@ -95,7 +97,6 @@ import type {
   AiStatus,
   ApprovalRequest,
   AuditEntry,
-  CommandOutput,
   AuthMethod,
   Host,
   PortForward,
@@ -110,8 +111,8 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 const SshTerminal = lazy(() =>
   import("./SshTerminal").then((m) => ({ default: m.SshTerminal })),
 );
-const TerminalOutput = lazy(() =>
-  import("./TerminalOutput").then((m) => ({ default: m.TerminalOutput })),
+const LiveTerminalOutput = lazy(() =>
+  import("./TerminalOutput").then((m) => ({ default: m.LiveTerminalOutput })),
 );
 import { SftpBrowser } from "./SftpBrowser";
 import { usePrefs, THEMES } from "./lib/prefs";
@@ -2072,30 +2073,44 @@ function SnippetsView({
         runId,
         id: s.id,
         label: s.label,
-        results: targets.map((h) => ({ hostId: h.id, hostName: h.name, pending: true })),
+        results: targets.map((h) => ({
+          hostId: h.id,
+          hostName: h.name,
+          output: "",
+          status: "running" as RunStatus,
+        })),
       },
       ...cur,
     ]);
     if (targets.length === 0) return;
+
+    const patch = (hostId: string, fn: (r: RunResult) => RunResult) =>
+      setRuns((cur) =>
+        cur.map((run) =>
+          run.runId !== runId
+            ? run
+            : { ...run, results: run.results.map((x) => (x.hostId === hostId ? fn(x) : x)) },
+        ),
+      );
+
     await Promise.all(
       targets.map(async (h) => {
-        const done = (r: Partial<RunResult>) =>
-          setRuns((cur) =>
-            cur.map((run) =>
-              run.runId !== runId
-                ? run
-                : {
-                    ...run,
-                    results: run.results.map((x) =>
-                      x.hostId === h.id ? { ...x, pending: false, ...r } : x,
-                    ),
-                  },
-            ),
-          );
+        const decoder = new TextDecoder();
+        const channel = new Channel<ArrayBuffer>();
+        // Stream output into state as it arrives, so the log fills in live.
+        channel.onmessage = (buf) => {
+          const chunk = decoder.decode(new Uint8Array(buf), { stream: true });
+          patch(h.id, (r) => ({ ...r, output: r.output + chunk }));
+        };
         try {
-          done({ out: await api.runCommandUi(h.id, s.script, true) });
+          const exit = await api.runCommandStream(h.id, s.script, channel);
+          patch(h.id, (r) => ({
+            ...r,
+            status: exit.exit_signal ? "error" : "done",
+            exit: exit.exit_status,
+          }));
         } catch (e) {
-          done({ error: errText(e) });
+          patch(h.id, (r) => ({ ...r, status: "error", error: errText(e) }));
         }
       }),
     );
@@ -2323,35 +2338,42 @@ function SnippetSheet({
 
 type ScriptRun = { runId: string; id: string; label: string; results: RunResult[] };
 
+type RunStatus = "running" | "done" | "error";
 type RunResult = {
   hostId: string;
   hostName: string;
-  pending?: boolean;
-  out?: CommandOutput;
+  output: string;
+  status: RunStatus;
+  exit?: number | null;
   error?: string;
 };
 
 function RunResultBlock({ result }: { result: RunResult }) {
-  const failed =
-    result.error != null ||
-    (result.out != null && result.out.exit_status !== 0 && result.out.exit_status !== null);
-  const label = result.pending
-    ? "running…"
-    : result.error
-      ? "failed"
-      : `exit ${result.out?.exit_status ?? "?"}`;
+  const [expanded, setExpanded] = useState(false);
+  const failed = result.status === "error" || (result.exit != null && result.exit !== 0);
+  const label =
+    result.status === "running" ? "running…" : failed ? "failed" : `exit ${result.exit ?? 0}`;
 
   return (
-    <div className="group rounded-md border">
-      <div className="flex items-center gap-2 px-3 py-2">
+    <div className="rounded-md border">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-accent/40 rounded-t-md"
+      >
+        <ChevronRight
+          className={
+            "size-4 shrink-0 text-muted-foreground transition-transform " +
+            (expanded ? "rotate-90" : "")
+          }
+        />
         <span className="text-sm font-medium truncate">{result.hostName}</span>
-        <span className="text-xs text-muted-foreground/60 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
-          hover for output
-        </span>
+        {result.status === "running" && <Spinner className="size-3.5" />}
         <span
           className={
             "ml-auto shrink-0 rounded px-1.5 py-0.5 text-xs " +
-            (result.pending
+            (result.status === "running"
               ? "bg-muted text-muted-foreground"
               : failed
                 ? "bg-destructive/15 text-destructive"
@@ -2360,38 +2382,22 @@ function RunResultBlock({ result }: { result: RunResult }) {
         >
           {label}
         </span>
-      </div>
-      {/* The log opens only on hover, so a run across many hosts stays compact. */}
-      <div className="grid grid-rows-[0fr] group-hover:grid-rows-[1fr] group-focus-within:grid-rows-[1fr] transition-[grid-template-rows] duration-200 ease-out">
-        <div className="overflow-hidden">
-          <div className="border-t">
-            {result.pending && (
-              <p className="px-3 py-2 text-xs text-muted-foreground">waiting for the host…</p>
-            )}
-            {result.error && <p className="px-3 py-2 text-xs text-destructive">{result.error}</p>}
-            {result.out?.stdout && (
-              <div className="bg-[var(--term-bg)] p-3">
-                <Suspense fallback={<div className="h-16" />}>
-                  <TerminalOutput text={result.out.stdout} />
-                </Suspense>
-              </div>
-            )}
-            {result.out?.stderr && (
-              <pre
-                className={
-                  "max-h-40 overflow-auto p-3 text-xs font-mono whitespace-pre-wrap " +
-                  (failed ? "bg-destructive/10 text-destructive" : "bg-muted text-muted-foreground")
-                }
-              >
-                {result.out.stderr}
-              </pre>
-            )}
-            {result.out && !result.out.stdout && !result.out.stderr && (
-              <p className="px-3 py-2 text-xs text-muted-foreground">No output.</p>
-            )}
-          </div>
+      </button>
+      {expanded && (
+        <div className="border-t">
+          {result.error && <p className="px-3 py-2 text-xs text-destructive">{result.error}</p>}
+          {(result.output.length > 0 || result.status === "running") && (
+            <div className="h-[320px] bg-[var(--term-bg)] p-3">
+              <Suspense fallback={<div className="h-full" />}>
+                <LiveTerminalOutput output={result.output} />
+              </Suspense>
+            </div>
+          )}
+          {result.status !== "running" && result.output.length === 0 && !result.error && (
+            <p className="px-3 py-2 text-xs text-muted-foreground">No output.</p>
+          )}
         </div>
-      </div>
+      )}
     </div>
   );
 }

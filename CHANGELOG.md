@@ -3,6 +3,12 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.31 - 2026-08-11
+
+### Changed
+- Script output is a live terminal now: it streams as the command runs, not only when it finishes, and looks exactly like a normal session (same font, colours and GPU rendering). Each host's log expands on click with a chevron instead of on hover.
+- The AI can upload from any local file, not only from the AI transfer directory. Downloads still land in that directory, and uploads remain gated by the per-host file policy and audited.
+
 ## 0.1.30 - 2026-08-09
 
 Hardening pass from a full code review.

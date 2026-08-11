@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, Channel } from "@tauri-apps/api/core";
 
 export type AiPolicy = "locked" | "confirm" | "free";
 export type SecretKind = "password" | "private_key";
@@ -238,3 +238,13 @@ export const mcpRemoveRegistration = (name: string) =>
 
 export const runCommandUi = (hostId: string, command: string, pty = false) =>
   invoke<CommandOutput>("run_command_ui", { hostId, command, pty });
+
+export interface StreamExit {
+  exit_status: number | null;
+  exit_signal: string | null;
+}
+export const runCommandStream = (
+  hostId: string,
+  command: string,
+  onOutput: Channel<ArrayBuffer>,
+) => invoke<StreamExit>("run_command_stream", { hostId, command, onOutput });
