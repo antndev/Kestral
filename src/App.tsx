@@ -3323,6 +3323,8 @@ function ChangelogSheet({ onClose }: { onClose: () => void }) {
   );
 }
 
+const RELEASES_URL = "https://github.com/antndev/Kestral/releases/latest";
+
 // Turn the updater's raw reqwest/plugin errors into a short, friendly message.
 function friendlyUpdateError(e: unknown): string {
   const raw = errText(e).toLowerCase();
@@ -3461,6 +3463,15 @@ function UpdateCard() {
             )}
           </div>
         </div>
+        {state.kind === "error" && (
+          <button
+            type="button"
+            onClick={() => void openUrl(RELEASES_URL)}
+            className="self-start inline-flex items-center gap-1 text-xs text-info hover:underline"
+          >
+            <ArrowUpRight className="size-3.5" />Download it from GitHub instead
+          </button>
+        )}
         {state.kind === "available" && state.notes && (
           <p className="text-xs text-muted-foreground whitespace-pre-wrap border-t pt-3">{state.notes}</p>
         )}
@@ -3665,7 +3676,15 @@ function StartupUpdateDialog({
         {phase === "done" && (
           <p className="text-sm text-muted-foreground pt-1">Installed. Restarting Kestral…</p>
         )}
-        {phase === "error" && <p className="text-destructive text-sm pt-1">{err}</p>}
+        {phase === "error" && (
+          <div className="flex flex-col gap-1 pt-1">
+            <p className="text-destructive text-sm break-words">{err}</p>
+            <p className="text-xs text-muted-foreground">
+              You can also download the installer from GitHub and run it; your hosts and settings
+              stay.
+            </p>
+          </div>
+        )}
 
         <AlertDialogFooter>
           {phase === "prompt" && (
@@ -3683,7 +3702,13 @@ function StartupUpdateDialog({
             </Button>
           )}
           {phase === "error" && (
-            <Button variant="secondary" onClick={onClose}>Close</Button>
+            <>
+              <Button variant="ghost" onClick={onClose}>Close</Button>
+              <Button variant="secondary" onClick={() => void openUrl(RELEASES_URL)}>
+                <ArrowUpRight className="size-4" />Get it from GitHub
+              </Button>
+              <Button onClick={run}>Try again</Button>
+            </>
           )}
         </AlertDialogFooter>
       </AlertDialogContent>

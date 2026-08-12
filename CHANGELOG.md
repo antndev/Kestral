@@ -3,6 +3,11 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.38 - 2026-08-12
+
+### Changed
+- If an in-app update ever fails to download, the update dialog and the Settings panel now offer "Get it from GitHub", which opens the release page in your browser, plus "Try again", so you are never stuck. The error message and dialog layout are tidied up.
+
 ## 0.1.37 - 2026-08-12
 
 ### Fixed
