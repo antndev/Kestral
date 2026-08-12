@@ -629,22 +629,33 @@ pub async fn run_command_stream(
 
     let mut exit_status: Option<i32> = None;
     let mut exit_signal: Option<String> = None;
-    while let Some(msg) = channel.wait().await {
-        match msg {
-            ChannelMsg::Data { ref data } => {
-                let _ = on_output.send(InvokeResponseBody::Raw(data.to_vec()));
-            }
-            ChannelMsg::ExtendedData { ref data, ext } => {
-                if ext == 1 {
+    let pump = async {
+        while let Some(msg) = channel.wait().await {
+            match msg {
+                ChannelMsg::Data { ref data } => {
                     let _ = on_output.send(InvokeResponseBody::Raw(data.to_vec()));
                 }
+                ChannelMsg::ExtendedData { ref data, ext } => {
+                    if ext == 1 {
+                        let _ = on_output.send(InvokeResponseBody::Raw(data.to_vec()));
+                    }
+                }
+                ChannelMsg::ExitStatus { exit_status: code } => exit_status = Some(code as i32),
+                ChannelMsg::ExitSignal { signal_name, .. } => {
+                    exit_signal = Some(format!("{signal_name:?}"));
+                }
+                _ => {}
             }
-            ChannelMsg::ExitStatus { exit_status: code } => exit_status = Some(code as i32),
-            ChannelMsg::ExitSignal { signal_name, .. } => {
-                exit_signal = Some(format!("{signal_name:?}"));
-            }
-            _ => {}
         }
+    };
+    // Bound a streamed run too, so a runaway command (a stray `yes`) cannot stream
+    // forever. 30 minutes is generous for a real script; the frontend also caps
+    // how much output it keeps.
+    if tokio::time::timeout(std::time::Duration::from_secs(1800), pump)
+        .await
+        .is_err()
+    {
+        exit_signal.get_or_insert_with(|| "timed out after 30 min".to_string());
     }
 
     let success = exit_signal.is_none() && exit_status == Some(0);

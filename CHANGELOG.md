@@ -3,6 +3,11 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.34 - 2026-08-12
+
+### Changed
+- Streamed script runs are bounded like one-shot commands now: a run times out after 30 minutes and the kept output is capped, so a stray runaway command such as `yes` cannot stream forever or exhaust memory.
+
 ## 0.1.33 - 2026-08-12
 
 Security hardening pass from a full whole-app audit.

@@ -2097,10 +2097,22 @@ function SnippetsView({
       targets.map(async (h) => {
         const decoder = new TextDecoder();
         const channel = new Channel<ArrayBuffer>();
-        // Stream output into state as it arrives, so the log fills in live.
+        const MAX_OUTPUT = 4 * 1024 * 1024;
+        // Stream output into state as it arrives, so the log fills in live, but
+        // stop growing it past a cap so a runaway command cannot exhaust memory.
         channel.onmessage = (buf) => {
           const chunk = decoder.decode(new Uint8Array(buf), { stream: true });
-          patch(h.id, (r) => ({ ...r, output: r.output + chunk }));
+          patch(h.id, (r) => {
+            if (r.output.length >= MAX_OUTPUT) return r;
+            const next = r.output + chunk;
+            return {
+              ...r,
+              output:
+                next.length > MAX_OUTPUT
+                  ? next.slice(0, MAX_OUTPUT) + "\r\n[output truncated]\r\n"
+                  : next,
+            };
+          });
         };
         try {
           const exit = await api.runCommandStream(h.id, s.script, channel);
