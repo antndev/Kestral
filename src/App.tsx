@@ -3291,6 +3291,33 @@ function ChangelogSheet({ onClose }: { onClose: () => void }) {
   );
 }
 
+// Turn the updater's raw reqwest/plugin errors into a short, friendly message.
+function friendlyUpdateError(e: unknown): string {
+  const raw = errText(e).toLowerCase();
+  if (
+    raw.includes("error sending request") ||
+    raw.includes("connect") ||
+    raw.includes("timed out") ||
+    raw.includes("timeout") ||
+    raw.includes("dns") ||
+    raw.includes("network") ||
+    raw.includes("tcp") ||
+    raw.includes("request")
+  ) {
+    return "Couldn't reach GitHub to fetch the update. Check your connection, VPN or firewall, then try again.";
+  }
+  if (raw.includes("signature") || raw.includes("verif")) {
+    return "The update's signature couldn't be verified. Try again; if it keeps failing, install the latest release from GitHub.";
+  }
+  if (raw.includes("permission") || raw.includes("denied") || raw.includes("os error 5")) {
+    return "Windows blocked the update. Close Kestral and run the installer yourself, or allow it in your antivirus.";
+  }
+  if (raw.includes("not found") || raw.includes("404")) {
+    return "The update file wasn't available yet. It may still be publishing; try again in a few minutes.";
+  }
+  return "The update couldn't be completed. Please try again.";
+}
+
 function UpdateCard() {
   type State =
     | { kind: "idle" }
@@ -3328,7 +3355,7 @@ function UpdateCard() {
       setState({ kind: "available", version: update.version, notes: update.body || undefined });
     } catch (e) {
       await settle();
-      setState({ kind: "error", message: errText(e) });
+      setState({ kind: "error", message: friendlyUpdateError(e) });
     }
   }
 
@@ -3338,9 +3365,18 @@ function UpdateCard() {
       await installTauriUpdate((pct) => setState({ kind: "downloading", pct }));
       setState({ kind: "ready" });
     } catch (e) {
-      setState({ kind: "error", message: errText(e) });
+      setState({ kind: "error", message: friendlyUpdateError(e) });
     }
   }
+
+  // After an error, retry the download if we already found an update, else re-check.
+  const retry = () => {
+    if ((window as unknown as { __kestralUpdate?: TauriUpdate }).__kestralUpdate) {
+      void install();
+    } else {
+      void check();
+    }
+  };
 
   return (
     <Card>
@@ -3376,7 +3412,7 @@ function UpdateCard() {
                 size="sm"
                 variant="secondary"
                 className="w-full transition-all"
-                onClick={check}
+                onClick={state.kind === "error" ? retry : check}
                 disabled={state.kind === "checking"}
               >
                 {state.kind === "checking" ? (
@@ -3384,6 +3420,8 @@ function UpdateCard() {
                     <Spinner className="size-4" />
                     <span className="animate-in fade-in-0 duration-500">Checking…</span>
                   </>
+                ) : state.kind === "error" ? (
+                  "Try again"
                 ) : (
                   "Check for updates"
                 )}
@@ -3559,7 +3597,7 @@ function StartupUpdateDialog({
       await installTauriUpdate(setPct);
       setPhase("done");
     } catch (e) {
-      setErr(errText(e));
+      setErr(friendlyUpdateError(e));
       setPhase("error");
     }
   }

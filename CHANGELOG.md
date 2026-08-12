@@ -3,6 +3,11 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.35 - 2026-08-12
+
+### Changed
+- Update errors are now shown as short, friendly messages instead of the raw request error and URL. A failed download can be retried in place with a "Try again" button, and common causes (no connection, blocked by antivirus, not published yet) are named.
+
 ## 0.1.34 - 2026-08-12
 
 ### Changed
