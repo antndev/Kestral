@@ -3177,17 +3177,46 @@ type TauriUpdate = {
 async function installTauriUpdate(onPct: (n: number) => void) {
   const update = (window as unknown as { __kestralUpdate?: TauriUpdate }).__kestralUpdate;
   if (!update) throw "No update to install";
-  let total = 0;
-  let got = 0;
-  await update.downloadAndInstall((e) => {
-    if (e.event === "Started") total = e.data?.contentLength ?? 0;
-    else if (e.event === "Progress") {
-      got += e.data?.chunkLength ?? 0;
-      onPct(total ? Math.round((got / total) * 100) : 0);
+
+  const runDownload = async () => {
+    let total = 0;
+    let got = 0;
+    await update.downloadAndInstall((e) => {
+      if (e.event === "Started") total = e.data?.contentLength ?? 0;
+      else if (e.event === "Progress") {
+        got += e.data?.chunkLength ?? 0;
+        onPct(total ? Math.round((got / total) * 100) : 0);
+      }
+    });
+  };
+
+  // GitHub's release CDN and some antivirus scanners drop the connection
+  // intermittently, which reqwest reports as "error sending request". Retry the
+  // download a few times before giving up, since it usually succeeds on a retry.
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await runDownload();
+      const { relaunch } = await import("@tauri-apps/plugin-process");
+      await relaunch();
+      return;
+    } catch (e) {
+      lastErr = e;
+      const msg = String(e).toLowerCase();
+      const retryable =
+        msg.includes("error sending request") ||
+        msg.includes("connect") ||
+        msg.includes("timed out") ||
+        msg.includes("timeout") ||
+        msg.includes("request") ||
+        msg.includes("network") ||
+        msg.includes("reset");
+      if (!retryable || attempt === 2) break;
+      onPct(0);
+      await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
     }
-  });
-  const { relaunch } = await import("@tauri-apps/plugin-process");
-  await relaunch();
+  }
+  throw lastErr;
 }
 
 function changelogCategoryColor(cat: string): string {

@@ -3,6 +3,11 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.36 - 2026-08-12
+
+### Changed
+- The updater now retries a failed download a few times with a short backoff. GitHub's release CDN and some antivirus scanners drop the connection intermittently ("error sending request"), and a retry usually gets through.
+
 ## 0.1.35 - 2026-08-12
 
 ### Changed
