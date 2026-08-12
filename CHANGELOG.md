@@ -3,6 +3,13 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.32 - 2026-08-12
+
+### Fixed
+- Running `clear` (or Ctrl+L) now drops the scrollback too, so you can no longer scroll back to the output from before the clear. Full-screen apps like vim or less are left alone.
+- The terminal no longer occasionally drops characters or garbles the prompt. It uses the reliable renderer again and no longer resizes the remote terminal to a tiny size while its tab is hidden.
+- When a session disconnects, the overlay now sits above the terminal, so the Reconnect button is clickable and the terminal can no longer be scrolled behind it.
+
 ## 0.1.31 - 2026-08-11
 
 ### Changed

@@ -1,7 +1,7 @@
 {
   "name": "kestral",
   "private": true,
-  "version": "0.1.31",
+  "version": "0.1.32",
   "description": "Desktop SSH client with an encrypted vault and a built-in MCP server for controlled AI access to your servers",
   "license": "PolyForm-Noncommercial-1.0.0",
   "author": "antndev <antonkonig691@gmail.com>",
@@ -38,7 +38,6 @@
     "@tauri-apps/plugin-updater": "^2.10.1",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
-    "@xterm/addon-webgl": "^0.19.0",
     "@xterm/xterm": "^6.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

@@ -11,7 +11,6 @@ import { terminalTheme } from "./lib/terminal-themes";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
 type Stage = "connecting" | "authenticating" | "opening-shell" | "connected" | "error" | "closed";
@@ -68,15 +67,22 @@ export function SshTerminal({ hostId }: { hostId: string }) {
       }),
     );
     term.open(el);
-    // Crisp text via the GPU renderer. If WebGL is unavailable, xterm keeps its
-    // DOM renderer, so this is best-effort.
-    try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
-      term.loadAddon(webgl);
-    } catch {
-      /* no WebGL; DOM renderer stays */
-    }
+    // After a `clear` (ED2), also drop the scrollback so you cannot scroll back
+    // to the output from before the clear.
+    term.parser.registerCsiHandler({ final: "J" }, (params) => {
+      // Only on the normal buffer, so a full-screen app (vim, less, htop) that
+      // erases its own screen on the alternate buffer is left alone.
+      if (params[0] === 2 && term.buffer.active.type === "normal") {
+        queueMicrotask(() => {
+          try {
+            term.clear();
+          } catch {
+            /* disposed */
+          }
+        });
+      }
+      return false; // let xterm still perform its normal erase
+    });
 
     const paste = async () => {
       try {
@@ -216,9 +222,13 @@ export function SshTerminal({ hostId }: { hostId: string }) {
     const ro = new ResizeObserver(() => {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
+        // Skip while the tab is hidden (0 size). Fitting then would resize the
+        // remote PTY to a tiny width and garble the prompt on the next redraw.
+        if (disposed || el.clientWidth === 0 || el.clientHeight === 0) return;
         try {
           fit.fit();
         } catch {
+          /* not laid out */
         }
         void invoke("ssh_resize", { id: sessionId, cols: term.cols, rows: term.rows });
       });
@@ -257,7 +267,9 @@ export function SshTerminal({ hostId }: { hostId: string }) {
       <div ref={wrapRef} className="h-full w-full" />
 
       {status.stage !== "connected" && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/70 backdrop-blur-[1px] animate-in fade-in-0 duration-150">
+        // z-20 puts the overlay above xterm's own layers, so the Reconnect
+        // button is clickable and the terminal cannot be scrolled underneath it.
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/70 backdrop-blur-[1px] animate-in fade-in-0 duration-150">
           <div className="flex flex-col items-center gap-5 text-center px-6">
             {connecting ? (
               <div className="flex flex-col gap-3 text-left">
