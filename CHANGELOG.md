@@ -3,6 +3,11 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.37 - 2026-08-12
+
+### Fixed
+- The "Update ready" dot in the sidebar no longer blinks far too fast when the animation-speed setting is turned up; it is now excluded from that scaling like the terminal cursor.
+
 ## 0.1.36 - 2026-08-12
 
 ### Changed

@@ -506,7 +506,10 @@ function Shell({ onLock }: { onLock: () => void }) {
             >
               <span className="relative flex size-4 shrink-0 items-center justify-center">
                 <Download className="size-4 transition-transform group-hover:scale-110" />
-                <span className="absolute -top-1 -right-1 size-2 rounded-full bg-success animate-pulse" />
+                <span
+                  data-no-anim-scale
+                  className="absolute -top-1 -right-1 size-2 rounded-full bg-success animate-pulse"
+                />
               </span>
               <span className="truncate flex-1 text-left">Update ready</span>
             </button>
