@@ -32,6 +32,9 @@ pub struct AuditLog {
     // Approximate on-disk line count, so we can compact a long-running session
     // instead of only trimming the file at the next startup.
     line_count: AtomicUsize,
+    // Serializes all disk mutation, so a concurrent append can never interleave
+    // with a compaction's rewrite-and-rename and be lost.
+    disk_lock: Mutex<()>,
 }
 
 impl AuditLog {
@@ -41,6 +44,7 @@ impl AuditLog {
             path,
             vault,
             line_count: AtomicUsize::new(0),
+            disk_lock: Mutex::new(()),
         }
     }
 
@@ -121,20 +125,24 @@ impl AuditLog {
             "AI action"
         );
 
+        // Hold the disk lock across the append and any compaction, so no other
+        // thread's append lands between a compaction's snapshot and its rename.
+        let _disk = self.disk_lock.lock().unwrap();
         self.append(&entry);
 
-        let mut entries = self.entries.lock().unwrap();
-        entries.push(entry);
-        let len = entries.len();
-        if len > MAX_ENTRIES {
-            entries.drain(0..len - MAX_ENTRIES);
+        {
+            let mut entries = self.entries.lock().unwrap();
+            entries.push(entry);
+            let len = entries.len();
+            if len > MAX_ENTRIES {
+                entries.drain(0..len - MAX_ENTRIES);
+            }
         }
-        drop(entries);
 
         // Keep the on-disk file bounded during a long-running session, not only
         // at the next startup.
         if self.line_count.fetch_add(1, Ordering::SeqCst) + 1 > MAX_LINES {
-            self.compact();
+            self.compact_locked();
         }
     }
 
@@ -180,6 +188,12 @@ impl AuditLog {
     }
 
     fn compact(&self) {
+        let _disk = self.disk_lock.lock().unwrap();
+        self.compact_locked();
+    }
+
+    // Caller must hold disk_lock.
+    fn compact_locked(&self) {
         let entries = self.entries.lock().unwrap().clone();
         let mut buf = String::new();
         for e in &entries {

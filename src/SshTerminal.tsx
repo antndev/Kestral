@@ -28,7 +28,12 @@ const STAGE_TEXT: Record<Stage, string> = {
   closed: "Disconnected",
 };
 
-const PW_PROMPT = /(password|passphrase|passcode|verification code)[^\n]{0,40}:\s*$/i;
+// Prompts after which the typed line is treated as a secret and NOT recorded in
+// the audit log. Kept deliberately broad and fail-safe: over-suppressing a
+// command is far better than logging a token, OTP, key or password. Matches when
+// the last output line ends with one of these words followed by a colon.
+const PW_PROMPT =
+  /(pass(word|phrase|code)|(verification|security|auth|login|one[-\s]?time)\s*code|\botp\b|\b2fa\b|\bmfa\b|token|secret|api[\s_-]?key|private[-\s]?key|\bpin\b)[^\n]{0,40}:\s*$/i;
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
 
 export function SshTerminal({ hostId }: { hostId: string }) {

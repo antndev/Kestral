@@ -80,6 +80,7 @@ pub fn run() {
             let base_dir = kestral_data_dir();
             let _ = std::fs::create_dir_all(&base_dir);
             util::restrict_dir(&base_dir);
+            util::harden_dir(&base_dir);
             let vault_path = base_dir.join("vault.json");
 
             let vault = Arc::new(vault::Vault::new(vault_path));
@@ -93,6 +94,7 @@ pub fn run() {
                 policy: Arc::new(policy::PolicyEngine::new(
                     base_dir.join("ai_state"),
                     base_dir.join("protected_paths.json"),
+                    base_dir.join("ai_caps.json"),
                 )),
                 approval: Arc::new(approval::ApprovalBroker::new(app.handle().clone())),
                 audit: audit.clone(),

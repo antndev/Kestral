@@ -3,6 +3,21 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.33 - 2026-08-12
+
+Security hardening pass from a full whole-app audit.
+
+### Security
+- Host-key verification: a known host that presents a key of a different algorithm is now refused as a suspected man-in-the-middle / downgrade, instead of being silently trusted on first use.
+- AI SFTP uploads from outside the AI transfer directory now require explicit approval that shows the real local path, even on Free hosts, so the AI cannot silently read an arbitrary local file (such as a private key) and send it out.
+- The command kill switch normalises paths like the SFTP guard, so `.ssh//authorized_keys` or `.ssh/./authorized_keys` variants can no longer slip a protected path past it, and listing a protected directory is now blocked too.
+- What the AI may list is now saved to disk, so narrowing it is no longer silently reverted to the permissive defaults on restart.
+- Command output (16 MB) and SFTP downloads (2 GiB) are capped and commands time out after 5 minutes, so a runaway or hostile command cannot exhaust memory and crash the app.
+- Batch downloads use only the server file's base name, so a hostile server filename cannot write outside the chosen folder.
+- Command auditing in the terminal suppresses a much broader set of secret prompts (tokens, OTP/2FA, keys, PINs), erring toward not logging.
+- On Windows the data directory (vault, audit log, MCP token) is locked to the current user.
+- The audit log's disk writes are serialised so an entry cannot be lost during compaction.
+
 ## 0.1.32 - 2026-08-12
 
 ### Fixed

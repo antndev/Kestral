@@ -90,7 +90,10 @@ impl Services {
         let host = self.hosts.get(host_id)?;
         let host_id_s = host.id.to_string();
 
-        if self.policy.mentions_protected(command) {
+        // Gate the kill switch on is_active so a stale MCP client cannot fire the
+        // 'AI stopped' alarm and spam the audit while AI is already off; when off,
+        // the gate below denies with AiInactive instead.
+        if self.policy.is_active() && self.policy.mentions_protected(command) {
             self.trip_protected(&host.name, &host_id_s, command, command).await;
             return Err(AppError::PathNotAllowed(
                 "this command refers to a protected path. AI access has been stopped; re-enable it yourself to continue."
@@ -204,41 +207,50 @@ impl Services {
         result
     }
 
-    async fn authorize_file(&self, host_id: Uuid, action: &str) -> Result<(Host, &'static str)> {
+    /// Gate a file action. With `force_approval`, a host that would otherwise
+    /// allow it freely still has to be approved (used for uploads whose local
+    /// source is outside the AI transfer sandbox, so the user sees the real path).
+    async fn authorize_file(
+        &self,
+        host_id: Uuid,
+        action: &str,
+        force_approval: bool,
+    ) -> Result<(Host, &'static str)> {
         let host = self.hosts.get(host_id)?;
         let hid = host.id.to_string();
+        let gate = self.policy.gate(host.ai_file_policy);
+        if let Gate::Denied(reason) = gate {
+            self.record_denied(&hid, &host.name, action, reason);
+            return Err(reason_to_err(reason));
+        }
+        let needs_approval =
+            matches!(gate, Gate::NeedsApproval) || (force_approval && matches!(gate, Gate::Allowed));
+        if !needs_approval {
+            return Ok((host, "allowed"));
+        }
+        let approved = self
+            .approval
+            .request(hid.clone(), host.name.clone(), action.to_string())
+            .await;
+        if !approved {
+            self.audit.record(
+                hid,
+                host.name.clone(),
+                action.to_string(),
+                "denied",
+                None,
+                false,
+                Some("declined by the user".to_string()),
+            );
+            return Err(AppError::ApprovalDenied);
+        }
+        let host = self.hosts.get(host_id)?;
         match self.policy.gate(host.ai_file_policy) {
             Gate::Denied(reason) => {
                 self.record_denied(&hid, &host.name, action, reason);
                 Err(reason_to_err(reason))
             }
-            Gate::NeedsApproval => {
-                let approved = self
-                    .approval
-                    .request(hid.clone(), host.name.clone(), action.to_string())
-                    .await;
-                if !approved {
-                    self.audit.record(
-                        hid,
-                        host.name.clone(),
-                        action.to_string(),
-                        "denied",
-                        None,
-                        false,
-                        Some("declined by the user".to_string()),
-                    );
-                    return Err(AppError::ApprovalDenied);
-                }
-                let host = self.hosts.get(host_id)?;
-                match self.policy.gate(host.ai_file_policy) {
-                    Gate::Denied(reason) => {
-                        self.record_denied(&hid, &host.name, action, reason);
-                        Err(reason_to_err(reason))
-                    }
-                    _ => Ok((host, "approved")),
-                }
-            }
-            Gate::Allowed => Ok((host, "allowed")),
+            _ => Ok((host, "approved")),
         }
     }
 
@@ -267,7 +279,8 @@ impl Services {
 
     pub async fn ai_sftp_list(&self, host_id: Uuid, path: &str) -> Result<Vec<FileEntry>> {
         let action = format!("sftp list {path}");
-        let (host, decision) = self.authorize_file(host_id, &action).await?;
+        self.guard_protected(host_id, &action, path).await?;
+        let (host, decision) = self.authorize_file(host_id, &action, false).await?;
         let result = sftp::one_shot_list(&self.ssh, &self.vault, &host, path).await;
         match &result {
             Ok(entries) => self.audit.record(
@@ -314,7 +327,7 @@ impl Services {
         let action = format!("sftp download {remote} -> {local}");
         self.guard_protected(host_id, &action, remote).await?;
         let safe_local = confine_ai_path(&self.transfers_dir, local)?;
-        let (host, decision) = self.authorize_file(host_id, &action).await?;
+        let (host, decision) = self.authorize_file(host_id, &action, false).await?;
         let result =
             sftp::one_shot_download(&self.ssh, &self.vault, &host, remote, &safe_local).await;
         self.audit_file(&host, &action, decision, &result);
@@ -324,9 +337,13 @@ impl Services {
     pub async fn ai_sftp_upload(&self, host_id: Uuid, local: &str, remote: &str) -> Result<u64> {
         let action = format!("sftp upload {local} -> {remote}");
         self.guard_protected(host_id, &action, remote).await?;
-        let (host, decision) = self.authorize_file(host_id, &action).await?;
-        // Uploads may read from any local path; only downloads are confined to the
-        // AI transfer directory. Still gated by the per-host file policy and audited.
+        // Uploads may read from any local path, but reading a file outside the AI
+        // transfer sandbox (e.g. a private key) is sensitive, so it always needs
+        // explicit approval that surfaces the real local path, even on a Free host.
+        let outside_sandbox = confine_ai_path(&self.transfers_dir, local).is_err();
+        let (host, decision) = self
+            .authorize_file(host_id, &action, outside_sandbox)
+            .await?;
         let result =
             sftp::one_shot_upload(&self.ssh, &self.vault, &host, Path::new(local), remote).await;
         self.audit_file(&host, &action, decision, &result);

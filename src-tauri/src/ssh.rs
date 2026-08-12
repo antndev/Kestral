@@ -39,15 +39,34 @@ impl client::Handler for ClientHandler {
         match russh::keys::check_known_hosts(&self.host, self.port, server_public_key) {
             Ok(true) => Ok(true),
             Ok(false) => {
-                tracing::info!(
-                    "TOFU: new host {}:{} accepted, fingerprint {fp}",
-                    self.host,
-                    self.port
-                );
-                if let Err(e) = append_known_host(&self.host, self.port, server_public_key) {
-                    tracing::warn!("writing known_hosts failed: {e}");
+                // russh returns Ok(false) both for a genuinely new host and for a
+                // KNOWN host that presents a key of a different algorithm (only a
+                // same-algorithm mismatch yields KeyChanged). Treat the latter as
+                // a suspected host-key change / downgrade MITM, not a new host.
+                let already_known = russh::keys::known_hosts::known_host_keys(&self.host, self.port)
+                    .map(|keys| !keys.is_empty())
+                    .unwrap_or(false);
+                if already_known {
+                    tracing::error!(
+                        "Host {}:{} is already known but presented an unrecognized key ({fp}); refusing (possible MITM/downgrade)",
+                        self.host,
+                        self.port
+                    );
+                    self.key_changed
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(false)
+                } else {
+                    // Genuine first contact: trust on first use.
+                    tracing::info!(
+                        "TOFU: new host {}:{} accepted, fingerprint {fp}",
+                        self.host,
+                        self.port
+                    );
+                    if let Err(e) = append_known_host(&self.host, self.port, server_public_key) {
+                        tracing::warn!("writing known_hosts failed: {e}");
+                    }
+                    Ok(true)
                 }
-                Ok(true)
             }
             Err(russh::keys::Error::KeyChanged { line }) => {
                 tracing::error!(
@@ -188,46 +207,63 @@ impl SshManager {
             .await
             .map_err(|e| AppError::Ssh(format!("exec: {e}")))?;
 
+        const MAX_OUTPUT: usize = 16 * 1024 * 1024;
+
         let mut stdout: Vec<u8> = Vec::new();
         let mut stderr: Vec<u8> = Vec::new();
         let mut exit_status: Option<i32> = None;
         let mut exit_signal: Option<String> = None;
+        let mut truncated = false;
 
-        loop {
-            let Some(msg) = channel.wait().await else {
-                break;
-            };
-            match msg {
-                ChannelMsg::Data { ref data } => stdout.extend_from_slice(data),
-                ChannelMsg::ExtendedData { ref data, ext } => {
-                    if ext == 1 {
-                        stderr.extend_from_slice(data);
+        let collect = async {
+            while let Some(msg) = channel.wait().await {
+                match msg {
+                    ChannelMsg::Data { ref data } => {
+                        append_capped(&mut stdout, data, MAX_OUTPUT, &mut truncated)
                     }
-                }
-                ChannelMsg::ExitStatus { exit_status: code } => {
-                    exit_status = Some(code as i32);
-                }
-                ChannelMsg::ExitSignal {
-                    signal_name,
-                    core_dumped,
-                    error_message,
-                    ..
-                } => {
-                    let mut s = format!("{signal_name:?}");
-                    if core_dumped {
-                        s.push_str(" (core dumped)");
+                    ChannelMsg::ExtendedData { ref data, ext } => {
+                        if ext == 1 {
+                            append_capped(&mut stderr, data, MAX_OUTPUT, &mut truncated)
+                        }
                     }
-                    if !error_message.is_empty() {
-                        s.push_str(&format!(": {error_message}"));
+                    ChannelMsg::ExitStatus { exit_status: code } => {
+                        exit_status = Some(code as i32);
                     }
-                    exit_signal = Some(s);
+                    ChannelMsg::ExitSignal {
+                        signal_name,
+                        core_dumped,
+                        error_message,
+                        ..
+                    } => {
+                        let mut s = format!("{signal_name:?}");
+                        if core_dumped {
+                            s.push_str(" (core dumped)");
+                        }
+                        if !error_message.is_empty() {
+                            s.push_str(&format!(": {error_message}"));
+                        }
+                        exit_signal = Some(s);
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
+        };
+
+        // Bound the run: a runaway command (e.g. `yes`) must not hang the request
+        // or grow the buffer without limit and OOM the whole app.
+        if tokio::time::timeout(std::time::Duration::from_secs(300), collect)
+            .await
+            .is_err()
+        {
+            exit_signal.get_or_insert_with(|| "timed out after 300s".to_string());
         }
 
+        let mut stdout = String::from_utf8_lossy(&stdout).into_owned();
+        if truncated {
+            stdout.push_str("\n[output truncated at 16 MB]");
+        }
         Ok(CommandOutput {
-            stdout: String::from_utf8_lossy(&stdout).into_owned(),
+            stdout,
             stderr: String::from_utf8_lossy(&stderr).into_owned(),
             exit_status,
             exit_signal,
@@ -276,6 +312,20 @@ impl SshManager {
                 "Agent login is not implemented yet (Pageant/Named Pipe on Windows)".into(),
             )),
         }
+    }
+}
+
+/// Append `data` to `buf` up to `cap` bytes total, setting `truncated` if any
+/// bytes had to be dropped.
+fn append_capped(buf: &mut Vec<u8>, data: &[u8], cap: usize, truncated: &mut bool) {
+    if buf.len() >= cap {
+        *truncated = true;
+        return;
+    }
+    let take = (cap - buf.len()).min(data.len());
+    buf.extend_from_slice(&data[..take]);
+    if take < data.len() {
+        *truncated = true;
     }
 }
 

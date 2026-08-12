@@ -351,8 +351,15 @@ export function SftpBrowser({ tabId, host, active }: { tabId: string; host: Host
       let ok = 0;
       const failed: string[] = [];
       for (const f of items) {
+        // Use only the bare basename of the server-supplied name, so a hostile
+        // filename like `..\\..\\evil` cannot write outside the chosen folder.
+        const clean = f.name.split(/[/\\]/).pop() ?? "";
+        if (!clean || clean === "." || clean === "..") {
+          failed.push(f.name);
+          continue;
+        }
         try {
-          const dest = await join(dir, f.name);
+          const dest = await join(dir, clean);
           bytes += f.is_dir
             ? await api.sftpDownloadDir(tabId, f.path, dest)
             : await api.sftpDownload(tabId, f.path, dest);

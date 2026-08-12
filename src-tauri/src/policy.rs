@@ -61,6 +61,7 @@ pub struct PolicyEngine {
     inner: Mutex<Inner>,
     state_path: PathBuf,
     protected_path: PathBuf,
+    caps_path: PathBuf,
 }
 
 /// Paths the AI must never write to, unless the user changes the list. These
@@ -73,11 +74,6 @@ fn default_protected() -> Vec<String> {
     ]
 }
 
-/// True if `path` is covered by the protection `pattern`. A pattern beginning
-/// with `/` is anchored at the root; otherwise it matches as a trailing path
-/// segment, so `.ssh/authorized_keys` covers `/home/x/.ssh/authorized_keys` and
-/// `/root/.ssh/authorized_keys`. A directory pattern also protects everything
-/// inside it.
 /// Canonicalize a path the way the SFTP/OpenSSH server would before it opens the
 /// file: forward slashes, no leading `~/`, and no empty / `.` / `..` segments.
 /// Without this an AI could dodge the guard with `.ssh//authorized_keys` or
@@ -104,6 +100,22 @@ fn normalize_path(p: &str) -> String {
     }
 }
 
+/// Collapse `\` to `/` and repeated `/` and `/./` segments, so slash-variant
+/// paths in free command text still match a protected pattern.
+fn collapse_slashes(text: &str) -> String {
+    let mut out = text.replace('\\', "/");
+    loop {
+        let next = out.replace("/./", "/").replace("//", "/");
+        if next == out {
+            return next;
+        }
+        out = next;
+    }
+}
+
+/// True if `path` is covered by the protection `pattern` (both normalized). A
+/// `/`-anchored pattern matches from the root; otherwise it matches as a trailing
+/// path segment, and a directory pattern protects everything inside it.
 fn path_matches(path: &str, pattern: &str) -> bool {
     let path = normalize_path(path);
     let pat = normalize_path(pattern.trim());
@@ -124,7 +136,7 @@ fn path_matches(path: &str, pattern: &str) -> bool {
 impl PolicyEngine {
     const MAX_MINUTES: i64 = 24 * 60;
 
-    pub fn new(state_path: PathBuf, protected_path: PathBuf) -> Self {
+    pub fn new(state_path: PathBuf, protected_path: PathBuf, caps_path: PathBuf) -> Self {
         // Persisted as an absolute expiry ("until <RFC3339>"), "forever" for no
         // limit, or "off". Storing an absolute time means a restart neither
         // resets the countdown nor revives an already-elapsed grant.
@@ -152,16 +164,24 @@ impl PolicyEngine {
             Ok(s) => serde_json::from_str::<Vec<String>>(&s).unwrap_or_else(|_| default_protected()),
             Err(_) => default_protected(),
         };
+        // Persisted like the rest of the policy, so a user narrowing what the AI
+        // may read is not silently widened back to the permissive defaults on
+        // the next restart.
+        let caps = match std::fs::read_to_string(&caps_path) {
+            Ok(s) => serde_json::from_str::<AiCaps>(&s).unwrap_or_default(),
+            Err(_) => AiCaps::default(),
+        };
         Self {
             inner: Mutex::new(Inner {
                 enabled,
                 expires_at,
                 default_minutes: 30,
-                caps: AiCaps::default(),
+                caps,
                 protected,
             }),
             state_path,
             protected_path,
+            caps_path,
         }
     }
 
@@ -189,15 +209,18 @@ impl PolicyEngine {
 
     /// Best-effort tripwire for commands: true if a protected path appears in
     /// the command text. Catches the obvious `>> ~/.ssh/authorized_keys` route;
-    /// a command is arbitrary, so this is a guardrail, not a sandbox.
+    /// a command is arbitrary, so this is a guardrail, not a sandbox. The text is
+    /// slash-normalised first so `//` and `/./` variants (which the SFTP guard
+    /// already blocks) cannot slip a protected path past it.
     pub fn mentions_protected(&self, text: &str) -> bool {
+        let normalized = collapse_slashes(text);
         let inner = self.inner.lock().unwrap();
         inner
             .protected
             .iter()
             .map(|p| p.trim())
             .filter(|p| !p.is_empty())
-            .any(|p| text.contains(p))
+            .any(|p| normalized.contains(&collapse_slashes(p)))
     }
 
     fn persist_state(&self, inner: &Inner) {
@@ -268,6 +291,9 @@ impl PolicyEngine {
 
     pub fn set_caps(&self, caps: AiCaps) {
         self.inner.lock().unwrap().caps = caps;
+        if let Ok(json) = serde_json::to_string_pretty(&caps) {
+            let _ = std::fs::write(&self.caps_path, json);
+        }
     }
 
     pub fn status(&self) -> AiStatus {
@@ -301,7 +327,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let pp = dir.join("protected.json");
         std::fs::write(&pp, serde_json::to_string(protected).unwrap()).unwrap();
-        PolicyEngine::new(dir.join("ai_state"), pp)
+        PolicyEngine::new(dir.join("ai_state"), pp, dir.join("caps.json"))
     }
 
     #[test]
@@ -334,6 +360,15 @@ mod tests {
     }
 
     #[test]
+    fn command_tripwire_survives_slash_variants() {
+        let p = engine(&[".ssh/authorized_keys"]);
+        assert!(p.mentions_protected("echo k >> ~/.ssh//authorized_keys"));
+        assert!(p.mentions_protected("tee ~/.ssh/./authorized_keys"));
+        assert!(p.mentions_protected(r"type C:\Users\x\.ssh\authorized_keys"));
+        assert!(!p.mentions_protected("echo hello world"));
+    }
+
+    #[test]
     fn normalized_path_variants_do_not_bypass_protection() {
         let p = engine(&[".ssh/authorized_keys"]);
         assert!(p.is_protected("/home/x/.ssh//authorized_keys"));
@@ -351,12 +386,12 @@ mod tests {
         let state = dir.join("ai_state");
         let prot = dir.join("protected.json");
 
-        let p = PolicyEngine::new(state.clone(), prot.clone());
+        let p = PolicyEngine::new(state.clone(), prot.clone(), dir.join("caps.json"));
         p.enable(Some(30));
         let exp = p.status().expires_at.expect("bounded grant has an expiry");
 
         // Reopening restores the same expiry, not a fresh full window.
-        let p2 = PolicyEngine::new(state.clone(), prot.clone());
+        let p2 = PolicyEngine::new(state.clone(), prot.clone(), dir.join("caps.json"));
         assert!(p2.is_active());
         assert_eq!(exp, p2.status().expires_at.expect("expiry restored"));
 
@@ -366,7 +401,7 @@ mod tests {
             format!("until {}", (Utc::now() - Duration::minutes(1)).to_rfc3339()),
         )
         .unwrap();
-        let p3 = PolicyEngine::new(state, prot);
+        let p3 = PolicyEngine::new(state, prot, dir.join("caps.json"));
         assert!(!p3.is_active());
     }
 
@@ -377,13 +412,13 @@ mod tests {
         let state = dir.join("ai_state");
         let prot = dir.join("protected.json");
 
-        let p = PolicyEngine::new(state.clone(), prot.clone());
+        let p = PolicyEngine::new(state.clone(), prot.clone(), dir.join("caps.json"));
         p.enable(Some(0));
         assert!(p.is_active());
         assert!(p.status().expires_at.is_none());
 
         // Restored as no-limit after a restart.
-        let p2 = PolicyEngine::new(state, prot);
+        let p2 = PolicyEngine::new(state, prot, dir.join("caps.json"));
         assert!(p2.is_active());
         assert!(p2.status().expires_at.is_none());
 
@@ -396,7 +431,7 @@ mod tests {
     fn defaults_apply_when_no_file_exists() {
         let dir = std::env::temp_dir().join(format!("kestral_pol_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let p = PolicyEngine::new(dir.join("ai_state"), dir.join("missing.json"));
+        let p = PolicyEngine::new(dir.join("ai_state"), dir.join("missing.json"), dir.join("caps.json"));
         assert!(p.is_protected("/root/.ssh/authorized_keys"));
         assert!(p.is_protected("/home/u/.ssh/config"));
     }

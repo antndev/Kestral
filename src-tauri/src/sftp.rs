@@ -85,14 +85,28 @@ async fn list(sftp: &SftpSession, path: &str) -> Result<Vec<FileEntry>> {
     Ok(out)
 }
 
+const MAX_DOWNLOAD: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
+
 async fn download(sftp: &SftpSession, remote: &str, local: &Path) -> Result<u64> {
-    let mut rf = sftp.open(remote).await.map_err(|e| ferr("open", e))?;
-    let mut buf = Vec::new();
-    rf.read_to_end(&mut buf).await.map_err(|e| ferr("read", e))?;
-    let n = buf.len() as u64;
-    tokio::fs::write(local, &buf)
+    let rf = sftp.open(remote).await.map_err(|e| ferr("open", e))?;
+    // Stream to disk in bounded chunks rather than read the whole file into
+    // memory, and stop past the cap so a huge or /dev/zero-backed file cannot
+    // exhaust memory or the disk.
+    let mut reader = rf.take(MAX_DOWNLOAD + 1);
+    let mut lf = tokio::fs::File::create(local)
         .await
-        .map_err(|e| ferr("write local file", e))?;
+        .map_err(|e| ferr("create local file", e))?;
+    let n = tokio::io::copy(&mut reader, &mut lf)
+        .await
+        .map_err(|e| ferr("download", e))?;
+    if n > MAX_DOWNLOAD {
+        drop(lf);
+        let _ = tokio::fs::remove_file(local).await;
+        return Err(crate::error::AppError::Ssh(format!(
+            "remote file exceeds the {} MiB download limit",
+            MAX_DOWNLOAD / (1024 * 1024)
+        )));
+    }
     Ok(n)
 }
 
