@@ -11,6 +11,7 @@ import { terminalTheme } from "./lib/terminal-themes";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
 type Stage = "connecting" | "authenticating" | "opening-shell" | "connected" | "error" | "closed";
@@ -72,6 +73,16 @@ export function SshTerminal({ hostId }: { hostId: string }) {
       }),
     );
     term.open(el);
+    // Crisp GPU text rendering (this is the sharp look). If WebGL is unavailable
+    // xterm keeps its DOM renderer, and on context loss we dispose so it degrades
+    // gracefully rather than showing a black box.
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => webgl.dispose());
+      term.loadAddon(webgl);
+    } catch {
+      /* no WebGL; DOM renderer stays */
+    }
     // After a `clear` (ED2), also drop the scrollback so you cannot scroll back
     // to the output from before the clear.
     term.parser.registerCsiHandler({ final: "J" }, (params) => {

@@ -3,6 +3,11 @@
 All notable changes to Kestral are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com) and semantic versioning.
 
+## 0.1.39 - 2026-08-14
+
+### Fixed
+- The terminal is sharp again. A dependency change had removed the WebGL renderer and moved xterm to a version without a stable one, so the terminal had fallen back to the blurry software renderer. Pinned back to the known-good xterm + WebGL stack, in both the interactive terminal and the script output.
+
 ## 0.1.38 - 2026-08-12
 
 ### Changed

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { usePrefs } from "./lib/prefs";
 import { terminalTheme } from "./lib/terminal-themes";
@@ -32,6 +33,15 @@ export function LiveTerminalOutput({ output }: { output: string }) {
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(el);
+    // Crisp GPU text, matching the interactive terminal; falls back to the DOM
+    // renderer if WebGL is unavailable.
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => webgl.dispose());
+      term.loadAddon(webgl);
+    } catch {
+      /* no WebGL; DOM renderer stays */
+    }
     try {
       fit.fit();
     } catch {
