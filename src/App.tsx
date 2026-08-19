@@ -285,6 +285,7 @@ function Shell({ onLock }: { onLock: () => void }) {
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   const [updateNotes, setUpdateNotes] = useState<string>("");
   const [updateOpen, setUpdateOpen] = useState(false);
+  const [onboardTray, setOnboardTray] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -304,6 +305,10 @@ function Shell({ onLock }: { onLock: () => void }) {
     return () => {
       alive = false;
     };
+  }, []);
+
+  useEffect(() => {
+    api.settingsGet().then((s) => setOnboardTray(!s.onboarded)).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -482,6 +487,15 @@ function Shell({ onLock }: { onLock: () => void }) {
       )}
       {updateOpen && updateVersion && (
         <StartupUpdateDialog version={updateVersion} notes={updateNotes} onClose={() => setUpdateOpen(false)} />
+      )}
+      {onboardTray && (
+        <TrayOnboardingDialog
+          onChoose={(tray) => {
+            void api.settingsSetMinimizeToTray(tray);
+            void api.settingsSetOnboarded();
+            setOnboardTray(false);
+          }}
+        />
       )}
       <ConnectPalette open={paletteOpen} onOpenChange={setPaletteOpen} onConnect={openSession} onConnectSftp={openSftp} />
 
@@ -3056,6 +3070,10 @@ function SettingsView() {
   } = usePrefs();
   const termIds = Object.keys(TERMINAL_THEMES);
   const preview = terminalTheme(termTheme, termColors);
+  const [minimizeToTray, setMinimizeToTray] = useState(false);
+  useEffect(() => {
+    api.settingsGet().then((s) => setMinimizeToTray(s.minimizeToTray)).catch(() => {});
+  }, []);
 
   return (
     <div className="px-6 pt-5 pb-12 flex flex-col gap-5">
@@ -3063,6 +3081,27 @@ function SettingsView() {
         <h2 className="text-lg font-semibold tracking-tight">Settings</h2>
         <p className="text-sm text-muted-foreground">Appearance, motion and terminal. Everything is stored locally.</p>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>General</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-5">
+          <SettingRow
+            label="Keep running in the tray"
+            hint="Closing the window hides Kestral to the system tray so AI access stays available in the background. Reopen or quit from the tray icon."
+          >
+            <Switch
+              checked={minimizeToTray}
+              onCheckedChange={(v) => {
+                setMinimizeToTray(v);
+                void api.settingsSetMinimizeToTray(v);
+              }}
+              aria-label="Keep running in the tray"
+            />
+          </SettingRow>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
@@ -3613,6 +3652,27 @@ function ConfirmDialog({
           >
             {confirmLabel ?? "Delete"}
           </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+function TrayOnboardingDialog({ onChoose }: { onChoose: (minimizeToTray: boolean) => void }) {
+  return (
+    <AlertDialog open onOpenChange={() => {}}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Keep running in the background?</AlertDialogTitle>
+          <AlertDialogDescription>
+            When you close the window, Kestral can keep running in the system tray so AI access stays
+            available in the background without cluttering your desktop. Reopen it or quit any time
+            from the tray icon. You can change this later in Settings.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={() => onChoose(false)}>Quit on close</AlertDialogCancel>
+          <AlertDialogAction onClick={() => onChoose(true)}>Keep in tray</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

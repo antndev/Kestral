@@ -8,6 +8,7 @@ mod hosts;
 mod mcp;
 mod model;
 mod policy;
+mod settings;
 mod sftp;
 mod skill;
 mod snippets;
@@ -17,6 +18,7 @@ mod terminal;
 mod util;
 mod vault;
 
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use tauri::Manager;
@@ -24,6 +26,15 @@ use tauri::Manager;
 use crate::state::{AppState, McpInfo, Services};
 
 const MCP_PORT: u16 = 4517;
+
+// Bring the main window back from the tray (or a background second launch).
+fn show_main(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
 
 fn kestral_data_dir() -> std::path::PathBuf {
     use std::path::PathBuf;
@@ -66,9 +77,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_focus();
-            }
+            show_main(app);
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -76,11 +85,33 @@ pub fn run() {
         .plugin(tauri_plugin_drag::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .on_window_event(|window, event| {
+            // When "minimize to tray" is on, the close button hides the window
+            // instead of quitting, so the MCP server keeps serving the AI in the
+            // background. Picking Exit from the tray sets `quitting` first.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if let Some(settings) =
+                    window.app_handle().try_state::<Arc<settings::SettingsStore>>()
+                {
+                    if settings.minimize_to_tray.load(Ordering::SeqCst)
+                        && !settings.quitting.load(Ordering::SeqCst)
+                    {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                }
+            }
+        })
         .setup(|app| {
             let base_dir = kestral_data_dir();
             let _ = std::fs::create_dir_all(&base_dir);
             util::restrict_dir(&base_dir);
             util::harden_dir(&base_dir);
+
+            let settings_store =
+                Arc::new(settings::SettingsStore::load(base_dir.join("app_settings.json")));
+            app.manage(settings_store);
+
             let vault_path = base_dir.join("vault.json");
 
             let vault = Arc::new(vault::Vault::new(vault_path));
@@ -129,6 +160,43 @@ pub fn run() {
             app.manage(terminal::Sessions::default());
             app.manage(sftp::SftpSessions::default());
             app.manage(forward::ForwardManager::default());
+
+            let open_item = tauri::menu::MenuItem::with_id(
+                app,
+                "tray_open",
+                "Open Kestral",
+                true,
+                None::<&str>,
+            )?;
+            let quit_item =
+                tauri::menu::MenuItem::with_id(app, "tray_quit", "Exit", true, None::<&str>)?;
+            let tray_menu = tauri::menu::Menu::with_items(app, &[&open_item, &quit_item])?;
+            let _tray = tauri::tray::TrayIconBuilder::with_id("kestral-tray")
+                .icon(app.default_window_icon().cloned().expect("window icon"))
+                .tooltip("Kestral")
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "tray_open" => show_main(app),
+                    "tray_quit" => {
+                        if let Some(settings) = app.try_state::<Arc<settings::SettingsStore>>() {
+                            settings.quitting.store(true, Ordering::SeqCst);
+                        }
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        button_state: tauri::tray::MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        show_main(tray.app_handle());
+                    }
+                })
+                .build(app)?;
 
             let mcp_handle = app.handle().clone();
             let reset_handle = app.handle().clone();
@@ -210,6 +278,9 @@ pub fn run() {
             terminal::ssh_write,
             terminal::ssh_resize,
             terminal::ssh_close,
+            commands::settings_get,
+            commands::settings_set_minimize_to_tray,
+            commands::settings_set_onboarded,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

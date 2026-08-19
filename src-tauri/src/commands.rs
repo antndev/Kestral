@@ -849,3 +849,27 @@ pub async fn sftp_close(sessions: State<'_, SftpSessions>, id: String) -> Result
     sessions.remove(&id);
     Ok(())
 }
+
+#[tauri::command]
+pub async fn settings_get(
+    settings: State<'_, Arc<crate::settings::SettingsStore>>,
+) -> Result<crate::settings::AppSettings> {
+    Ok(settings.get())
+}
+
+#[tauri::command]
+pub async fn settings_set_minimize_to_tray(
+    settings: State<'_, Arc<crate::settings::SettingsStore>>,
+    enabled: bool,
+) -> Result<()> {
+    settings.set_minimize_to_tray(enabled);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn settings_set_onboarded(
+    settings: State<'_, Arc<crate::settings::SettingsStore>>,
+) -> Result<()> {
+    settings.set_onboarded();
+    Ok(())
+}

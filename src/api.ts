@@ -113,6 +113,15 @@ export const vaultLock = () => invoke<void>("vault_lock");
 export const vaultChangeMaster = (current: string, next: string) =>
   invoke<void>("vault_change_master", { current, new: next });
 
+export interface AppSettings {
+  minimizeToTray: boolean;
+  onboarded: boolean;
+}
+export const settingsGet = () => invoke<AppSettings>("settings_get");
+export const settingsSetMinimizeToTray = (enabled: boolean) =>
+  invoke<void>("settings_set_minimize_to_tray", { enabled });
+export const settingsSetOnboarded = () => invoke<void>("settings_set_onboarded");
+
 export const secretPut = (id: string, kind: SecretKind, value: string) =>
   invoke<void>("secret_put", { id, kind, value });
 export const secretList = () => invoke<SecretMeta[]>("secret_list");
