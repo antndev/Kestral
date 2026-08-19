@@ -36,6 +36,14 @@ fn show_main(app: &tauri::AppHandle) {
     }
 }
 
+fn ai_status_text(policy: &policy::PolicyEngine) -> String {
+    if policy.status().active {
+        "AI access: on".to_string()
+    } else {
+        "AI access: off".to_string()
+    }
+}
+
 fn kestral_data_dir() -> std::path::PathBuf {
     use std::path::PathBuf;
     if let Some(dir) = std::env::var_os("KESTRAL_DATA_DIR")
@@ -161,6 +169,14 @@ pub fn run() {
             app.manage(sftp::SftpSessions::default());
             app.manage(forward::ForwardManager::default());
 
+            let ai_item = tauri::menu::MenuItem::with_id(
+                app,
+                "tray_ai",
+                ai_status_text(&app.state::<AppState>().services.policy),
+                false,
+                None::<&str>,
+            )?;
+            let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
             let open_item = tauri::menu::MenuItem::with_id(
                 app,
                 "tray_open",
@@ -170,7 +186,10 @@ pub fn run() {
             )?;
             let quit_item =
                 tauri::menu::MenuItem::with_id(app, "tray_quit", "Exit", true, None::<&str>)?;
-            let tray_menu = tauri::menu::Menu::with_items(app, &[&open_item, &quit_item])?;
+            let tray_menu = tauri::menu::Menu::with_items(
+                app,
+                &[&ai_item, &separator, &open_item, &quit_item],
+            )?;
             let _tray = tauri::tray::TrayIconBuilder::with_id("kestral-tray")
                 .icon(app.default_window_icon().cloned().expect("window icon"))
                 .tooltip("Kestral")
@@ -197,6 +216,25 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            // Keep the AI access line in the tray menu current.
+            let tray_policy = app.state::<AppState>().services.policy.clone();
+            let tray_ai_item = ai_item.clone();
+            let tray_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut last = String::new();
+                loop {
+                    let text = ai_status_text(&tray_policy);
+                    if text != last {
+                        last = text.clone();
+                        let item = tray_ai_item.clone();
+                        let _ = tray_app.run_on_main_thread(move || {
+                            let _ = item.set_text(text);
+                        });
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                }
+            });
 
             let mcp_handle = app.handle().clone();
             let reset_handle = app.handle().clone();
