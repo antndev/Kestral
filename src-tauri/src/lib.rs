@@ -38,9 +38,9 @@ fn show_main(app: &tauri::AppHandle) {
 
 fn ai_status_text(policy: &policy::PolicyEngine) -> String {
     if policy.status().active {
-        "AI access: on".to_string()
+        "AI: on".to_string()
     } else {
-        "AI access: off".to_string()
+        "AI: off".to_string()
     }
 }
 
@@ -177,13 +177,8 @@ pub fn run() {
                 None::<&str>,
             )?;
             let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
-            let open_item = tauri::menu::MenuItem::with_id(
-                app,
-                "tray_open",
-                "Open Kestral",
-                true,
-                None::<&str>,
-            )?;
+            let open_item =
+                tauri::menu::MenuItem::with_id(app, "tray_open", "Open", true, None::<&str>)?;
             let quit_item =
                 tauri::menu::MenuItem::with_id(app, "tray_quit", "Exit", true, None::<&str>)?;
             let tray_menu = tauri::menu::Menu::with_items(
