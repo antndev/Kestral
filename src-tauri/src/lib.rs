@@ -44,6 +44,22 @@ fn ai_status_text(policy: &policy::PolicyEngine) -> String {
     }
 }
 
+struct TrayAiItem(tauri::menu::MenuItem<tauri::Wry>);
+
+// Push the current AI access state to the tray line immediately. Called the
+// moment access is toggled so the tray never lags behind the app.
+pub fn refresh_tray_ai(app: &tauri::AppHandle) {
+    let (Some(item), Some(state)) = (app.try_state::<TrayAiItem>(), app.try_state::<AppState>())
+    else {
+        return;
+    };
+    let text = ai_status_text(&state.services.policy);
+    let item = item.0.clone();
+    let _ = app.run_on_main_thread(move || {
+        let _ = item.set_text(text);
+    });
+}
+
 fn kestral_data_dir() -> std::path::PathBuf {
     use std::path::PathBuf;
     if let Some(dir) = std::env::var_os("KESTRAL_DATA_DIR")
@@ -212,7 +228,11 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // Keep the AI access line in the tray menu current.
+            // Toggling AI access updates the tray line instantly (see
+            // refresh_tray_ai in ai_enable/ai_disable). This poll is only the
+            // safety net for changes with no command behind them: a timed
+            // expiry, or the protected-path kill switch tripping.
+            app.manage(TrayAiItem(ai_item.clone()));
             let tray_policy = app.state::<AppState>().services.policy.clone();
             let tray_ai_item = ai_item.clone();
             let tray_app = app.handle().clone();
@@ -227,7 +247,7 @@ pub fn run() {
                             let _ = item.set_text(text);
                         });
                     }
-                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 }
             });
 

@@ -243,14 +243,20 @@ pub async fn ai_status(state: State<'_, AppState>) -> Result<AiStatus> {
 }
 
 #[tauri::command]
-pub async fn ai_enable(state: State<'_, AppState>, minutes: Option<i64>) -> Result<()> {
+pub async fn ai_enable(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    minutes: Option<i64>,
+) -> Result<()> {
     state.services.policy.enable(minutes);
+    crate::refresh_tray_ai(&app);
     Ok(())
 }
 
 #[tauri::command]
-pub async fn ai_disable(state: State<'_, AppState>) -> Result<()> {
+pub async fn ai_disable(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<()> {
     state.services.policy.disable();
+    crate::refresh_tray_ai(&app);
     Ok(())
 }
 
