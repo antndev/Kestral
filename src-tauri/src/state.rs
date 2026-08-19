@@ -207,14 +207,12 @@ impl Services {
         result
     }
 
-    /// Gate a file action. With `force_approval`, a host that would otherwise
-    /// allow it freely still has to be approved (used for uploads whose local
-    /// source is outside the AI transfer sandbox, so the user sees the real path).
+    /// Gate a file action purely by the host's Files policy: Free runs without
+    /// asking, Ask prompts for approval, Blocked is denied.
     async fn authorize_file(
         &self,
         host_id: Uuid,
         action: &str,
-        force_approval: bool,
     ) -> Result<(Host, &'static str)> {
         let host = self.hosts.get(host_id)?;
         let hid = host.id.to_string();
@@ -223,8 +221,7 @@ impl Services {
             self.record_denied(&hid, &host.name, action, reason);
             return Err(reason_to_err(reason));
         }
-        let needs_approval =
-            matches!(gate, Gate::NeedsApproval) || (force_approval && matches!(gate, Gate::Allowed));
+        let needs_approval = matches!(gate, Gate::NeedsApproval);
         if !needs_approval {
             return Ok((host, "allowed"));
         }
@@ -280,7 +277,7 @@ impl Services {
     pub async fn ai_sftp_list(&self, host_id: Uuid, path: &str) -> Result<Vec<FileEntry>> {
         let action = format!("sftp list {path}");
         self.guard_protected(host_id, &action, path).await?;
-        let (host, decision) = self.authorize_file(host_id, &action, false).await?;
+        let (host, decision) = self.authorize_file(host_id, &action).await?;
         let result = sftp::one_shot_list(&self.ssh, &self.vault, &host, path).await;
         match &result {
             Ok(entries) => self.audit.record(
@@ -327,7 +324,7 @@ impl Services {
         let action = format!("sftp download {remote} -> {local}");
         self.guard_protected(host_id, &action, remote).await?;
         let safe_local = confine_ai_path(&self.transfers_dir, local)?;
-        let (host, decision) = self.authorize_file(host_id, &action, false).await?;
+        let (host, decision) = self.authorize_file(host_id, &action).await?;
         let result =
             sftp::one_shot_download(&self.ssh, &self.vault, &host, remote, &safe_local).await;
         self.audit_file(&host, &action, decision, &result);
@@ -337,13 +334,7 @@ impl Services {
     pub async fn ai_sftp_upload(&self, host_id: Uuid, local: &str, remote: &str) -> Result<u64> {
         let action = format!("sftp upload {local} -> {remote}");
         self.guard_protected(host_id, &action, remote).await?;
-        // Uploads may read from any local path, but reading a file outside the AI
-        // transfer sandbox (e.g. a private key) is sensitive, so it always needs
-        // explicit approval that surfaces the real local path, even on a Free host.
-        let outside_sandbox = confine_ai_path(&self.transfers_dir, local).is_err();
-        let (host, decision) = self
-            .authorize_file(host_id, &action, outside_sandbox)
-            .await?;
+        let (host, decision) = self.authorize_file(host_id, &action).await?;
         let result =
             sftp::one_shot_upload(&self.ssh, &self.vault, &host, Path::new(local), remote).await;
         self.audit_file(&host, &action, decision, &result);
