@@ -37,6 +37,37 @@ const PW_PROMPT =
   /(pass(word|phrase|code)|(verification|security|auth|login|one[-\s]?time)\s*code|\botp\b|\b2fa\b|\bmfa\b|token|secret|api[\s_-]?key|private[-\s]?key|\bpin\b)[^\n]{0,40}:\s*$/i;
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
 
+// xterm's WebGL renderer can throw a benign "reading '_isDisposed'" error from a
+// requestAnimationFrame that fires just after the addon is disposed (on
+// reconnect, or when a terminal tab is closed). It is a teardown race inside
+// xterm, not a real fault, but uncaught it makes React unmount the whole view
+// and drops you back to the host list. The synchronous dispose is already
+// guarded; this swallows only that exact asynchronous disposal error and lets
+// everything else propagate. Installed once, on first terminal mount.
+let disposeGuardInstalled = false;
+function installDisposeGuard() {
+  if (disposeGuardInstalled || typeof window === "undefined") return;
+  disposeGuardInstalled = true;
+  const isBenign = (msg: unknown) =>
+    typeof msg === "string" && msg.includes("_isDisposed");
+  window.addEventListener(
+    "error",
+    (e) => {
+      if (isBenign(e.message)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }
+    },
+    true,
+  );
+  window.addEventListener("unhandledrejection", (e) => {
+    const reason = e.reason as { message?: unknown } | undefined;
+    if (isBenign(reason?.message) || isBenign(String(e.reason ?? ""))) {
+      e.preventDefault();
+    }
+  });
+}
+
 export function SshTerminal({ hostId }: { hostId: string }) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<Status>({ stage: "connecting", detail: "" });
@@ -52,6 +83,7 @@ export function SshTerminal({ hostId }: { hostId: string }) {
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
+    installDisposeGuard();
     let disposed = false;
     const sessionId = crypto.randomUUID();
     setStatus({ stage: "connecting", detail: "" });
@@ -72,16 +104,29 @@ export function SshTerminal({ hostId }: { hostId: string }) {
         if (event.ctrlKey || event.metaKey) void openUrl(uri);
       }),
     );
+    // A previous session's teardown can, in rare WebGL failure paths, leave a
+    // stale screen element behind; clear the container so a reconnect never
+    // stacks two terminals.
+    el.replaceChildren();
     term.open(el);
     // Crisp GPU text rendering (this is the sharp look). If WebGL is unavailable
     // xterm keeps its DOM renderer, and on context loss we dispose so it degrades
     // gracefully rather than showing a black box.
+    let webgl: WebglAddon | undefined;
     try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
+      webgl = new WebglAddon();
+      webgl.onContextLoss(() => {
+        try {
+          webgl?.dispose();
+        } catch {
+          /* renderer already torn down */
+        }
+        webgl = undefined;
+      });
       term.loadAddon(webgl);
     } catch {
       /* no WebGL; DOM renderer stays */
+      webgl = undefined;
     }
     // After a `clear` (ED2), also drop the scrollback so you cannot scroll back
     // to the output from before the clear.
@@ -260,7 +305,22 @@ export function SshTerminal({ hostId }: { hostId: string }) {
       closeSub.then((f) => f());
       el.removeEventListener("contextmenu", onContextMenu);
       void invoke("ssh_close", { id: sessionId });
-      term.dispose();
+      // Dispose the WebGL addon first and defensively. After the connection
+      // drops its renderer is half torn down, so letting term.dispose() reach it
+      // throws "Cannot read properties of undefined (reading '_isDisposed')".
+      // Both teardown steps are guarded so a failed dispose can never bubble up
+      // to React and bounce the user back to the host list on reconnect.
+      try {
+        webgl?.dispose();
+      } catch {
+        /* already gone */
+      }
+      webgl = undefined;
+      try {
+        term.dispose();
+      } catch {
+        /* renderer already torn down */
+      }
       termRef.current = null;
     };
   }, [hostId, gen]);
