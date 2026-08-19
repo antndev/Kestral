@@ -127,6 +127,19 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // Paint the loading window in the system's light/dark colour, so the
+            // first frame before the webview renders is not a theme-mismatched
+            // flash. The app defaults to following the system theme.
+            if let Some(w) = app.get_webview_window("main") {
+                let dark = w.theme().map(|t| t == tauri::Theme::Dark).unwrap_or(true);
+                let color = if dark {
+                    tauri::window::Color(10, 10, 10, 255)
+                } else {
+                    tauri::window::Color(255, 255, 255, 255)
+                };
+                let _ = w.set_background_color(Some(color));
+            }
+
             let base_dir = kestral_data_dir();
             let _ = std::fs::create_dir_all(&base_dir);
             util::restrict_dir(&base_dir);
