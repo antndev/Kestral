@@ -17,8 +17,15 @@ jobs:
   build:
     strategy:
       fail-fast: false
+      # Serialise so the two platforms update the release's updater latest.json
+      # one after another instead of racing to overwrite it.
+      max-parallel: 1
       matrix:
-        platform: [windows-latest]
+        include:
+          - platform: windows-latest
+            args: ""
+          - platform: macos-latest
+            args: "--bundles app,dmg"
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -33,6 +40,7 @@ jobs:
       # Restore the dependency cache warmed on main. Tag builds cannot share
       # caches with each other, so without this every release rebuilds the whole
       # dependency tree from scratch. save-if is off here: main owns the cache.
+      # The macOS runner has no warmed cache and builds cold; that is expected.
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
@@ -52,3 +60,4 @@ jobs:
           releaseName: Kestral ${{ github.ref_name }}
           releaseDraft: false
           prerelease: false
+          args: ${{ matrix.args }}
