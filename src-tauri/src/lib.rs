@@ -216,6 +216,11 @@ pub fn run() {
             )?;
             let _tray = tauri::tray::TrayIconBuilder::with_id("kestral-tray")
                 .icon(app.default_window_icon().cloned().expect("window icon"))
+                // On macOS the menu-bar icon must be a template: macOS then draws
+                // the feather's silhouette from its alpha as a native monochrome
+                // glyph instead of squeezing in the full-colour app icon. No-op
+                // on Windows, where the tray keeps the colour icon.
+                .icon_as_template(cfg!(target_os = "macos"))
                 .tooltip("Kestral")
                 .menu(&tray_menu)
                 .show_menu_on_left_click(false)
