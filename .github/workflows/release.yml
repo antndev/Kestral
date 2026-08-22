@@ -50,6 +50,11 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # Upload into a DRAFT release. The Windows leg finishes long before the cold
+      # macOS leg, so publishing eagerly would show a release with only the .exe
+      # for ~20 minutes. Keeping it a draft means nobody sees a half-built release
+      # and the updater's latest.json stays pointed at the previous version until
+      # both platforms are attached and the publish job flips the draft off.
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -58,6 +63,18 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: Kestral ${{ github.ref_name }}
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+  # Only once BOTH platform builds succeeded does the release go live. If either
+  # leg fails the release stays a draft, so a Windows-only or macOS-only release
+  # is never published.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the release now that both platforms are attached
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" --draft=false
