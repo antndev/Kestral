@@ -2520,13 +2520,9 @@ function McpView() {
   const [hosts, setHosts] = useState<Host[]>([]);
   const [caps, setCaps] = useState<AiCaps | null>(null);
   const [protectedPaths, setProtectedPaths] = useState<string[] | null>(null);
-  const [connecting, setConnecting] = useState(false);
-  const [rotating, setRotating] = useState(false);
-  const [connectMsg, setConnectMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [installing, setInstalling] = useState(false);
   const [installMsg, setInstallMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [skillOk, setSkillOk] = useState<boolean | null>(null);
-  const [regs, setRegs] = useState<api.Registration[] | null>(null);
 
   const refresh = useCallback(async () => {
     setStatus(await api.aiStatus());
@@ -2537,7 +2533,6 @@ function McpView() {
     api.aiCaps().then(setCaps);
     api.aiProtectedList().then(setProtectedPaths).catch(() => setProtectedPaths([]));
     api.skillInstalled().then(setSkillOk).catch(() => {});
-    api.mcpListRegistrations().then(setRegs).catch(() => setRegs([]));
     const t = setInterval(() => api.aiStatus().then(setStatus), 5000);
     return () => clearInterval(t);
   }, [refresh]);
@@ -2566,7 +2561,6 @@ function McpView() {
   }
 
   const active = status?.active ?? false;
-  const mcpReg = regs?.find((r) => r.is_this_app) ?? null;
 
   async function toggle(on: boolean) {
     if (on) await api.aiEnable(aiMinutes);
@@ -2580,20 +2574,6 @@ function McpView() {
     if (ms <= 0) return null;
     return Math.max(1, Math.round(ms / 60000));
   }, [active, status]);
-
-  async function connectClaudeCode() {
-    setConnecting(true);
-    setConnectMsg(null);
-    try {
-      const r = await api.mcpConnectClaudeCode("kestral");
-      setConnectMsg({ ok: r.ok, text: r.message });
-      refreshRegs();
-    } catch (e) {
-      setConnectMsg({ ok: false, text: errText(e) });
-    } finally {
-      setConnecting(false);
-    }
-  }
 
   async function installSkillFiles() {
     setInstalling(true);
@@ -2620,37 +2600,6 @@ function McpView() {
       setInstallMsg({ ok: false, text: errText(e) });
     } finally {
       setInstalling(false);
-    }
-  }
-
-  async function refreshRegs() {
-    try {
-      setRegs(await api.mcpListRegistrations());
-    } catch {
-      setRegs([]);
-    }
-  }
-
-  async function removeReg(name: string) {
-    setRegs((cur) => (cur ?? []).filter((r) => r.name !== name));
-    try {
-      await api.mcpRemoveRegistration(name);
-    } finally {
-      refreshRegs();
-    }
-  }
-
-  async function rotateToken() {
-    setRotating(true);
-    setConnectMsg(null);
-    try {
-      const r = await api.mcpRotateToken("kestral");
-      setConnectMsg({ ok: true, text: r.message });
-      refreshRegs();
-    } catch (e) {
-      setConnectMsg({ ok: false, text: errText(e) });
-    } finally {
-      setRotating(false);
     }
   }
 
@@ -2705,10 +2654,10 @@ function McpView() {
 
       <Card>
         <CardHeader>
-          <CardTitle>AI clients</CardTitle>
+          <CardTitle>Claude Code skill</CardTitle>
           <CardDescription>
-            Two methods for Claude to reach Kestral. Set up both, Claude picks whichever is
-            available.
+            Install the skill so Claude can run commands through Kestral. It works in any chat, new
+            or already open.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-5">
@@ -2727,8 +2676,8 @@ function McpView() {
                   </span>
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  For chats that are already open. A running chat cannot load new tools, so this is
-                  the only thing that reaches it.
+                  A small skill installed into Claude Code. It talks to this app locally and obeys
+                  the same per-host rules and approvals.
                 </p>
               </div>
               <div className="flex w-48 shrink-0 justify-end">
@@ -2762,98 +2711,9 @@ function McpView() {
             )}
           </div>
 
-          <div className="border-t pt-4 flex flex-col gap-3">
-            <div className="flex items-center justify-between gap-4">
-              <div className="min-w-0">
-                <p className="text-sm font-medium">MCP</p>
-                <p className="text-sm text-muted-foreground">
-                  The better method: real tools with checked arguments. Only chats started after
-                  connecting can see it.
-                </p>
-              </div>
-              <div className="flex w-48 shrink-0 justify-end">
-                {regs === null ? (
-                  <Button size="sm" className="w-full" variant="secondary" disabled>
-                    <Spinner className="size-4" />Checking…
-                  </Button>
-                ) : mcpReg && mcpReg.connected ? (
-                  <Button
-                    size="sm"
-                    className="w-full"
-                    variant="secondary"
-                    onClick={rotateToken}
-                    disabled={rotating}
-                  >
-                    {rotating && <Spinner className="size-4" />}Rotate token
-                  </Button>
-                ) : (
-                  <Button
-                    size="sm"
-                    className="w-full"
-                    onClick={connectClaudeCode}
-                    disabled={connecting}
-                  >
-                    {connecting && <Spinner className="size-4" />}
-                    {mcpReg ? "Reconnect" : "Connect"}
-                  </Button>
-                )}
-              </div>
-            </div>
-            {connectMsg && (
-              <p
-                className={
-                  "text-xs whitespace-pre-wrap " +
-                  (connectMsg.ok ? "text-muted-foreground" : "text-destructive")
-                }
-              >
-                {connectMsg.text}
-              </p>
-            )}
-
-            {regs === null ? (
-              <p className="text-xs text-muted-foreground">checking…</p>
-            ) : regs.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                Nothing registered yet. Use “Connect Claude Code” above.
-              </p>
-            ) : (
-              <div className="flex flex-col gap-1">
-                {regs.map((r) => (
-                  <div
-                    key={r.name}
-                    className="flex items-center gap-3 rounded-md border px-3 py-2 text-sm"
-                  >
-                    <span
-                      className={
-                        "size-2 rounded-full shrink-0 " +
-                        (r.connected ? "bg-success" : "bg-destructive")
-                      }
-                      aria-hidden
-                    />
-                    <span className="font-medium truncate">{r.name}</span>
-                    {r.is_this_app && (
-                      <span className="text-xs rounded bg-muted px-1.5 py-0.5 text-muted-foreground shrink-0">
-                        this app
-                      </span>
-                    )}
-                    <span className="text-xs text-muted-foreground truncate flex-1">{r.url}</span>
-                    <Button
-                      size="icon-sm"
-                      variant="ghost"
-                      onClick={() => removeReg(r.name)}
-                      aria-label={`Remove ${r.name}`}
-                    >
-                      <Trash2 className="size-4" />
-                    </Button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
           <p className="text-xs text-muted-foreground border-t pt-4">
-            Same rules either way: AI access must be on, locked hosts are refused, hosts set to ask
-            need your approval, everything is logged.
+            AI access must be on, locked hosts are refused, hosts set to ask need your approval,
+            everything is logged.
           </p>
         </CardContent>
       </Card>
