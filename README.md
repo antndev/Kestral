@@ -15,9 +15,31 @@ Kestral to run a command, and you decide per host whether that needs your approv
   `locked` (AI cannot touch it), `confirm` (every command needs approval), `free`.
 - Full audit log separating your own commands from AI activity.
 
+## Install
+
+Grab the latest build from the [Releases page](https://github.com/antndev/Kestral/releases/latest).
+
+**Windows.** Download the `.exe` installer and run it.
+
+**macOS (Apple Silicon).** Download the `.dmg`, open it, and drag Kestral into your
+Applications folder. The build is not signed with a paid Apple Developer certificate, so
+the first launch needs one manual approval:
+
+1. Right-click Kestral in Applications and choose **Open**, then confirm **Open** in the
+   dialog.
+2. If macOS instead says the app "is damaged", it is not damaged, that is just Gatekeeper
+   blocking the unsigned download. Clear the quarantine flag once in Terminal:
+   ```sh
+   xattr -cr /Applications/Kestral.app
+   ```
+   Then open it normally.
+
+Either step is only needed once per downloaded version. Clearing the quarantine flag
+targets just this app and leaves Gatekeeper otherwise untouched.
+
 ## Stack
 
-- Tauri v2 (Rust core, WebView2 UI)
+- Tauri v2 (Rust core, system WebView UI: WebView2 on Windows, WKWebView on macOS)
 - russh (ring backend) for SSH
 - rmcp + axum for the MCP server
 - React 19 + Vite + Tailwind v4, ReUI components (Radix UI)
