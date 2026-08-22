@@ -459,6 +459,85 @@ impl SecretStore for Vault {
     }
 }
 
+/// Encrypt arbitrary bytes under a password, in the same on-disk shape as a vault
+/// file (Argon2id KEK, XChaCha20-Poly1305, header as AAD). Used for the portable
+/// vault export, whose password is independent of any live vault.
+pub fn seal_with_password(plaintext: &[u8], password: &str) -> Result<Vec<u8>> {
+    let mut salt = [0u8; 16];
+    OsRng.fill_bytes(&mut salt);
+    let key = Vault::derive_key(password, &salt)?;
+
+    let mut nonce_bytes = [0u8; 24];
+    OsRng.fill_bytes(&mut nonce_bytes);
+
+    let header = Header {
+        version: VAULT_VERSION,
+        m_cost: KDF_M_COST,
+        t_cost: KDF_T_COST,
+        p_cost: KDF_P_COST,
+        salt: b64().encode(salt),
+        nonce: b64().encode(nonce_bytes),
+    };
+    let aad = serde_json::to_vec(&header)?;
+
+    let cipher =
+        XChaCha20Poly1305::new_from_slice(key.as_slice()).map_err(|_| AppError::Crypto)?;
+    let ciphertext = cipher
+        .encrypt(
+            XNonce::from_slice(&nonce_bytes),
+            Payload {
+                msg: plaintext,
+                aad: &aad,
+            },
+        )
+        .map_err(|_| AppError::Crypto)?;
+
+    let file = VaultFile {
+        header,
+        ciphertext: b64().encode(ciphertext),
+    };
+    Ok(serde_json::to_vec_pretty(&file)?)
+}
+
+/// Decrypt bytes produced by [`seal_with_password`]. A wrong password surfaces as
+/// `VaultAuth`; a malformed or tampered file as `Crypto`.
+pub fn open_with_password(bytes: &[u8], password: &str) -> Result<Zeroizing<Vec<u8>>> {
+    let file: VaultFile = serde_json::from_slice(bytes)?;
+
+    let salt = b64().decode(&file.header.salt).map_err(|_| AppError::Crypto)?;
+    let nonce = b64().decode(&file.header.nonce).map_err(|_| AppError::Crypto)?;
+    let ct = b64().decode(&file.ciphertext).map_err(|_| AppError::Crypto)?;
+    if salt.len() != 16 || nonce.len() != 24 {
+        return Err(AppError::Crypto);
+    }
+    if file.header.m_cost > 1_048_576 || file.header.t_cost > 10 || file.header.p_cost > 4 {
+        return Err(AppError::Crypto);
+    }
+
+    let params =
+        argon2::Params::new(file.header.m_cost, file.header.t_cost, file.header.p_cost, Some(32))
+            .map_err(|_| AppError::Crypto)?;
+    let argon = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
+    let mut key = Zeroizing::new([0u8; 32]);
+    argon
+        .hash_password_into(password.as_bytes(), &salt, key.as_mut_slice())
+        .map_err(|_| AppError::Crypto)?;
+
+    let aad = serde_json::to_vec(&file.header)?;
+    let cipher =
+        XChaCha20Poly1305::new_from_slice(key.as_slice()).map_err(|_| AppError::Crypto)?;
+    let plaintext = cipher
+        .decrypt(
+            XNonce::from_slice(&nonce),
+            Payload {
+                msg: &ct,
+                aad: &aad,
+            },
+        )
+        .map_err(|_| AppError::VaultAuth)?;
+    Ok(Zeroizing::new(plaintext))
+}
+
 fn b64() -> base64::engine::general_purpose::GeneralPurpose {
     base64::engine::general_purpose::STANDARD
 }

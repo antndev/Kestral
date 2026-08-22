@@ -99,6 +99,39 @@ pub async fn vault_change_master(
 }
 
 #[tauri::command]
+pub async fn vault_export(
+    state: State<'_, AppState>,
+    path: String,
+    password: String,
+) -> Result<()> {
+    let services = state.services.clone();
+    let password = Zeroizing::new(password);
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let bytes = crate::portable::export(&services, password.as_str())?;
+        crate::util::atomic_write(std::path::Path::new(&path), &bytes)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Other(e.to_string()))?
+}
+
+#[tauri::command]
+pub async fn vault_import(
+    state: State<'_, AppState>,
+    path: String,
+    password: String,
+) -> Result<crate::portable::ImportReport> {
+    let services = state.services.clone();
+    let password = Zeroizing::new(password);
+    tokio::task::spawn_blocking(move || -> Result<crate::portable::ImportReport> {
+        let bytes = std::fs::read(&path)?;
+        crate::portable::import(&services, &bytes, password.as_str())
+    })
+    .await
+    .map_err(|e| AppError::Other(e.to_string()))?
+}
+
+#[tauri::command]
 pub async fn secret_put(
     state: State<'_, AppState>,
     id: String,

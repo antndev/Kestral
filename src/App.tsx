@@ -3204,6 +3204,7 @@ function SettingsView() {
 
       <UpdateCard />
       <ChangePasswordCard />
+      <VaultBackupCard />
     </div>
   );
 }
@@ -3618,6 +3619,129 @@ function ChangePasswordCard() {
           <Button onClick={save} disabled={!canSave}>
             {busy && <Spinner className="size-4" />}Change password
           </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function VaultBackupCard() {
+  const [exportPw, setExportPw] = useState("");
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportErr, setExportErr] = useState("");
+  const [exportOk, setExportOk] = useState(false);
+
+  const [importPw, setImportPw] = useState("");
+  const [importBusy, setImportBusy] = useState(false);
+  const [importErr, setImportErr] = useState("");
+  const [importMsg, setImportMsg] = useState("");
+
+  async function doExport() {
+    setExportErr("");
+    setExportOk(false);
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const path = await save({
+        defaultPath: "kestral-vault.kvault",
+        filters: [{ name: "Kestral vault", extensions: ["kvault"] }],
+      });
+      if (!path) return;
+      setExportBusy(true);
+      await api.vaultExport(path, exportPw);
+      setExportOk(true);
+      setExportPw("");
+    } catch (e) {
+      setExportErr(errText(e));
+    } finally {
+      setExportBusy(false);
+    }
+  }
+
+  async function doImport() {
+    setImportErr("");
+    setImportMsg("");
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const picked = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "Kestral vault", extensions: ["kvault"] }],
+      });
+      const path = typeof picked === "string" ? picked : null;
+      if (!path) return;
+      setImportBusy(true);
+      const r = await api.vaultImport(path, importPw);
+      const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
+      const skipped = r.hosts_skipped + r.secrets_skipped + r.snippets_skipped;
+      setImportMsg(
+        `Imported ${plural(r.hosts_added, "host")}, ${plural(r.secrets_added, "secret")}, ${plural(
+          r.snippets_added,
+          "snippet",
+        )}.${skipped > 0 ? ` Skipped ${skipped} already present.` : ""}`,
+      );
+      setImportPw("");
+    } catch (e) {
+      setImportErr(errText(e));
+    } finally {
+      setImportBusy(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Backup & transfer</CardTitle>
+        <CardDescription>
+          Move your vault to another machine. The export holds every host, key and password,
+          encrypted with the password you set here. Keep the file safe. On the other machine create a
+          vault, then import the file here with this same password.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-6">
+        <div className="flex max-w-sm flex-col gap-4">
+          <LabeledField label="Export password">
+            <Input
+              type="password"
+              value={exportPw}
+              onChange={(e) => {
+                setExportPw(e.target.value);
+                setExportErr("");
+                setExportOk(false);
+              }}
+              placeholder="Protects the export file"
+              autoComplete="new-password"
+            />
+          </LabeledField>
+          {exportErr && <p className="text-sm text-destructive">{exportErr}</p>}
+          {exportOk && <p className="text-sm text-success">Vault exported.</p>}
+          <div>
+            <Button onClick={doExport} disabled={exportBusy || !exportPw}>
+              {exportBusy && <Spinner className="size-4" />}Export vault…
+            </Button>
+          </div>
+        </div>
+
+        <div className="flex max-w-sm flex-col gap-4 border-t pt-5">
+          <LabeledField label="Import password">
+            <Input
+              type="password"
+              value={importPw}
+              onChange={(e) => {
+                setImportPw(e.target.value);
+                setImportErr("");
+                setImportMsg("");
+              }}
+              placeholder="Password of the export file"
+              autoComplete="off"
+            />
+          </LabeledField>
+          {importErr && <p className="text-sm text-destructive">{importErr}</p>}
+          {importMsg && <p className="text-sm text-success">{importMsg}</p>}
+          <div>
+            <Button variant="outline" onClick={doImport} disabled={importBusy || !importPw}>
+              {importBusy && <Spinner className="size-4" />}Import vault…
+            </Button>
+          </div>
         </div>
       </CardContent>
     </Card>

@@ -8,6 +8,7 @@ mod hosts;
 mod mcp;
 mod model;
 mod policy;
+mod portable;
 mod settings;
 mod sftp;
 mod skill;
@@ -291,6 +292,8 @@ pub fn run() {
             commands::vault_unlock,
             commands::vault_lock,
             commands::vault_change_master,
+            commands::vault_export,
+            commands::vault_import,
             commands::secret_put,
             commands::secret_list,
             commands::secret_delete,

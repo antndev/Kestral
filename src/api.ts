@@ -113,6 +113,19 @@ export const vaultLock = () => invoke<void>("vault_lock");
 export const vaultChangeMaster = (current: string, next: string) =>
   invoke<void>("vault_change_master", { current, new: next });
 
+export interface ImportReport {
+  hosts_added: number;
+  hosts_skipped: number;
+  secrets_added: number;
+  secrets_skipped: number;
+  snippets_added: number;
+  snippets_skipped: number;
+}
+export const vaultExport = (path: string, password: string) =>
+  invoke<void>("vault_export", { path, password });
+export const vaultImport = (path: string, password: string) =>
+  invoke<ImportReport>("vault_import", { path, password });
+
 export interface AppSettings {
   minimizeToTray: boolean;
   onboarded: boolean;

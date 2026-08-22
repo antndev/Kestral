@@ -104,6 +104,26 @@ impl SnippetStore {
         Ok(snippet)
     }
 
+    /// Merge imported snippets in additively, skipping any whose id already
+    /// exists. Returns (added, skipped).
+    pub fn import(&self, incoming: Vec<Snippet>) -> Result<(usize, usize)> {
+        let mut items = self.items.lock().unwrap();
+        let mut added = 0;
+        let mut skipped = 0;
+        for snippet in incoming {
+            if items.iter().any(|s| s.id == snippet.id) {
+                skipped += 1;
+                continue;
+            }
+            items.push(snippet);
+            added += 1;
+        }
+        if added > 0 {
+            self.save(&items)?;
+        }
+        Ok((added, skipped))
+    }
+
     pub fn update(&self, snippet: Snippet) -> Result<()> {
         let mut items = self.items.lock().unwrap();
         let slot = items

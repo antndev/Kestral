@@ -128,6 +128,29 @@ impl HostStore {
         Ok(host)
     }
 
+    /// Merge imported hosts in additively. A host is skipped when its id or its
+    /// name (case-insensitive) already exists, so an import never clobbers or
+    /// duplicates. Returns (added, skipped).
+    pub fn import(&self, incoming: Vec<Host>) -> Result<(usize, usize)> {
+        let mut hosts = self.hosts.lock().unwrap();
+        let mut added = 0;
+        let mut skipped = 0;
+        for host in incoming {
+            let clash = hosts.iter().any(|h| h.id == host.id)
+                || name_taken(&hosts, &host.name, host.id);
+            if clash {
+                skipped += 1;
+                continue;
+            }
+            hosts.push(host);
+            added += 1;
+        }
+        if added > 0 {
+            self.save(&hosts)?;
+        }
+        Ok((added, skipped))
+    }
+
     pub fn update(&self, host: Host) -> Result<()> {
         let mut hosts = self.hosts.lock().unwrap();
         if name_taken(&hosts, &host.name, host.id) {
