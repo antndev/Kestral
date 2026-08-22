@@ -289,6 +289,23 @@ impl Vault {
         self.persist(unlocked)
     }
 
+    /// Insert several secrets and persist once, instead of rewriting and fsyncing
+    /// the whole vault per secret. Reserved ids are skipped. Used by the importer.
+    pub fn put_secrets(&self, items: Vec<(String, SecretKind, Vec<u8>)>) -> Result<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        let mut guard = self.state.lock().unwrap();
+        let unlocked = guard.as_mut().ok_or(AppError::VaultLocked)?;
+        for (id, kind, value) in items {
+            if is_reserved(&id) {
+                continue;
+            }
+            unlocked.data.insert(id, Record { kind, value });
+        }
+        self.persist(unlocked)
+    }
+
     pub fn seal_envelope(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
         let guard = self.state.lock().unwrap();
         let unlocked = guard.as_ref().ok_or(AppError::VaultLocked)?;
